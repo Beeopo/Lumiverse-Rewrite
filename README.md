@@ -73,3 +73,7 @@ The original browser extension lives at
 [Beeopo/Marinara-Rewrite](https://github.com/Beeopo/Marinara-Rewrite) (the Marinara Engine
 "Rewrite-Assistant"). This is a from-scratch rebuild of it as a native Lumiverse Spindle
 extension — backend worker + in-host frontend panel.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Copyright (c) 2026 Beeopo.
