@@ -1,0 +1,13 @@
+{
+  "version": "1.0.0",
+  "name": "Rewrite",
+  "identifier": "rewrite_assistant",
+  "author": "Beeopo",
+  "github": "https://github.com/Beeopo/Lumiverse-Rewrite",
+  "homepage": "https://github.com/Beeopo/Lumiverse-Rewrite",
+  "description": "Select text in a message and rewrite it in place with an LLM style profile. Panel-driven with Watch mode.",
+  "permissions": ["generation", "chats", "chat_mutation", "ui_panels", "characters", "personas", "memories", "world_books"],
+  "entry_backend": "dist/backend.js",
+  "entry_frontend": "dist/frontend.js",
+  "minimum_lumiverse_version": "0.1.0"
+}
