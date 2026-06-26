@@ -33,6 +33,17 @@ test("spliceRewrite returns null when the span can't be located", () => {
   expect(out).toBeNull()
 })
 
+test("rejects an out-of-bounds re (the multi-paragraph capture bug)", () => {
+  // Regression: captureSelection once set re = rs + Selection.toString().length, but
+  // Selection.toString() adds paragraph newlines that Range-based R/rs omit, so on a
+  // multi-paragraph message re could exceed R.length. The guard must reject that span
+  // (return null) rather than splice with a bogus end — and an in-bounds re must still map.
+  const R = "para onepara two" // Range.toString(): block newline dropped (n=16)
+  const raw = "para one\n\npara two"
+  expect(mapRenderedSpanToRaw(R, raw, 0, R.length + 2)).toBeNull() // re overshoots → reject
+  expect(mapRenderedSpanToRaw(R, raw, 0, R.length)).not.toBeNull() // in-bounds → maps
+})
+
 test("spliceRewrite rejects a stale selection that maps to a coincidental anchor", () => {
   // Stale capture: R (what the user selected against) no longer matches the live raw.
   // The shared prefix/suffix give alignExact a foothold, so it CAN map the selection's

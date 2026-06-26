@@ -41,8 +41,17 @@ function captureSelection(): { cap: Capture; text: string } | null {
   startProbe.setEnd(range.startContainer, range.startOffset)
   const rs = startProbe.toString().length
 
+  // re MUST live in the same Range.toString() coordinate space as rs and R. Deriving it from
+  // sel.toString() is the bug behind "couldn't locate" on large selections: Selection.toString()
+  // inserts newlines at paragraph/block boundaries that Range.toString() omits, so on a
+  // multi-paragraph message re overshoots R.length and spliceRewrite rejects the span. Probe the
+  // end with a Range (like the multi-message path does) and clamp for safety.
+  const endProbe = document.createRange()
+  endProbe.selectNodeContents(contentEl)
+  endProbe.setEnd(range.endContainer, range.endOffset)
+  const re = Math.min(endProbe.toString().length, R.length)
+
   const text = sel.toString()
-  const re = rs + text.length
   if (!text.trim()) return null
 
   return { cap: { chatId: "", messageId, R, rs, re }, text }
@@ -214,47 +223,47 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     /* ── Sections: hairline-separated groups with uppercase headers ── */
     .rw-sec { display: flex; flex-direction: column; gap: 9px; padding: 15px 0; border-top: 1px solid var(--lumiverse-border); }
     .rw-pane > .rw-sec:first-child { border-top: 0; padding-top: 12px; }
-    .rw-sec-hd { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 10px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; color: var(--lumiverse-text-muted); margin: 0; }
+    .rw-sec-hd { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: calc(10px * var(--lumiverse-font-scale, 1)); font-weight: 700; letter-spacing: .09em; text-transform: uppercase; color: var(--lumiverse-text-muted); margin: 0; }
     details.rw-sec { gap: 0; }
-    details.rw-sec > summary { list-style: none; cursor: pointer; user-select: none; display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 10px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; color: var(--lumiverse-text-muted); padding: 0; }
+    details.rw-sec > summary { list-style: none; cursor: pointer; user-select: none; display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: calc(10px * var(--lumiverse-font-scale, 1)); font-weight: 700; letter-spacing: .09em; text-transform: uppercase; color: var(--lumiverse-text-muted); padding: 0; }
     details.rw-sec > summary::-webkit-details-marker { display: none; }
-    details.rw-sec > summary::after { content: ""; flex: 0 0 auto; width: 6px; height: 6px; margin-right: 2px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform .2s ease; opacity: .85; }
+    details.rw-sec > summary::after { content: ""; flex: 0 0 auto; width: 6px; height: 6px; margin-right: 2px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform var(--lumiverse-transition); opacity: .85; }
     details.rw-sec[open] > summary::after { transform: rotate(45deg); }
     details.rw-sec[open] > summary { margin-bottom: 13px; }
     .rw-sec-body { display: flex; flex-direction: column; gap: 10px; }
 
     .rw-field { display: flex; flex-direction: column; gap: 5px; }
-    .rw-fieldlbl { font-size: 11px; color: var(--lumiverse-text-muted); }
+    .rw-fieldlbl { font-size: calc(11px * var(--lumiverse-font-scale, 1)); color: var(--lumiverse-text-muted); }
     .rw-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-    .rw-label { font-size: 11px; color: var(--lumiverse-text-muted); }
+    .rw-label { font-size: calc(11px * var(--lumiverse-font-scale, 1)); color: var(--lumiverse-text-muted); }
 
     /* ── Text controls ── */
-    .rw-area { width: 100%; min-height: 96px; resize: vertical; padding: 9px 11px; background: var(--lumiverse-fill); color: var(--lumiverse-text); border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); font: inherit; line-height: 1.5; outline: none; box-sizing: border-box; transition: border-color .15s ease, box-shadow .15s ease; }
-    .rw-select, .rw-input { width: 100%; padding: 8px 11px; background: var(--lumiverse-fill); color: var(--lumiverse-text); border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); font: inherit; font-size: 12.5px; outline: none; box-sizing: border-box; transition: border-color .15s ease, box-shadow .15s ease; }
+    .rw-area { width: 100%; min-height: 96px; resize: vertical; padding: 9px 11px; background: var(--lumiverse-fill); color: var(--lumiverse-text); border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); font: inherit; line-height: 1.5; outline: none; box-sizing: border-box; transition: border-color var(--lumiverse-transition-fast), box-shadow var(--lumiverse-transition-fast); }
+    .rw-select, .rw-input { width: 100%; padding: 8px 11px; background: var(--lumiverse-fill); color: var(--lumiverse-text); border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); font: inherit; font-size: calc(12.5px * var(--lumiverse-font-scale, 1)); outline: none; box-sizing: border-box; transition: border-color var(--lumiverse-transition-fast), box-shadow var(--lumiverse-transition-fast); }
     .rw-area:focus, .rw-select:focus, .rw-input:focus { border-color: var(--rw-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--rw-accent) 22%, transparent); }
     .rw-area::placeholder, .rw-input::placeholder, .rw-area:-ms-input-placeholder { color: var(--lumiverse-text-muted); }
     .rw-select { appearance: none; -webkit-appearance: none; padding-right: 30px; cursor: pointer; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-opacity='0.65' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; }
-    .rw-num { width: 58px; text-align: right; padding: 6px 8px; font-size: 12px; font-variant-numeric: tabular-nums; -moz-appearance: textfield; }
+    .rw-num { width: 58px; text-align: right; padding: 6px 8px; font-size: calc(12px * var(--lumiverse-font-scale, 1)); font-variant-numeric: tabular-nums; -moz-appearance: textfield; }
     .rw-num::-webkit-inner-spin-button, .rw-num::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 
     /* ── Buttons ── */
     .rw-btns { display: flex; gap: 7px; flex-wrap: wrap; }
-    .rw-btn { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 5px 10px; border-radius: var(--lumiverse-radius); border: 1px solid var(--lumiverse-border); background: var(--lumiverse-fill); color: var(--lumiverse-text); cursor: pointer; font: inherit; font-size: 11.5px; line-height: 1.2; transition: background .15s ease, border-color .15s ease, color .15s ease, filter .15s ease; }
+    .rw-btn { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 5px 10px; border-radius: var(--lumiverse-radius); border: 1px solid var(--lumiverse-border); background: var(--lumiverse-fill); color: var(--lumiverse-text); cursor: pointer; font: inherit; font-size: calc(11.5px * var(--lumiverse-font-scale, 1)); line-height: 1.2; transition: background var(--lumiverse-transition-fast), border-color var(--lumiverse-transition-fast), color var(--lumiverse-transition-fast), filter var(--lumiverse-transition-fast); }
     .rw-btn:hover:not(:disabled) { background: var(--lumiverse-fill-hover); border-color: var(--lumiverse-border-hover); }
     .rw-btn:active:not(:disabled) { transform: translateY(1px); }
     .rw-btn:disabled { opacity: .4; cursor: default; }
     .rw-btn.full { width: 100%; }
     .rw-btn.primary { background: color-mix(in srgb, var(--rw-accent) 86%, #000); color: #fff; border-color: transparent; font-weight: 600; }
     .rw-btn.primary:hover:not(:disabled) { filter: brightness(1.14); }
-    .rw-btn.run { width: 100%; padding: 7px; font-size: 12.5px; }
+    .rw-btn.run { width: 100%; padding: 7px; font-size: calc(12.5px * var(--lumiverse-font-scale, 1)); }
     .rw-btn.accent { background: color-mix(in srgb, var(--rw-accent) 13%, transparent); border-color: color-mix(in srgb, var(--rw-accent) 32%, transparent); color: var(--rw-accent-text); font-weight: 600; }
     .rw-btn.accent:hover:not(:disabled) { background: color-mix(in srgb, var(--rw-accent) 20%, transparent); border-color: color-mix(in srgb, var(--rw-accent) 45%, transparent); }
 
     /* ── Pill toggle (replaces raw checkboxes) ── */
-    .rw-tog { display: flex; align-items: center; gap: 9px; cursor: pointer; font-size: 12.5px; color: var(--lumiverse-text); user-select: none; white-space: nowrap; }
+    .rw-tog { display: flex; align-items: center; gap: 9px; cursor: pointer; font-size: calc(12.5px * var(--lumiverse-font-scale, 1)); color: var(--lumiverse-text); user-select: none; white-space: nowrap; }
     .rw-tog input { position: absolute; opacity: 0; width: 0; height: 0; }
-    .rw-tog-sl { position: relative; flex: 0 0 auto; width: 34px; height: 19px; border-radius: 19px; background: var(--lumiverse-fill-strong); transition: background .2s ease; }
-    .rw-tog-sl::before { content: ""; position: absolute; top: 3px; left: 3px; width: 13px; height: 13px; border-radius: 50%; background: var(--lumiverse-text-dim); transition: transform .2s ease, background .2s ease; }
+    .rw-tog-sl { position: relative; flex: 0 0 auto; width: 34px; height: 19px; border-radius: 19px; background: var(--lumiverse-fill-strong); transition: background var(--lumiverse-transition); }
+    .rw-tog-sl::before { content: ""; position: absolute; top: 3px; left: 3px; width: 13px; height: 13px; border-radius: 50%; background: var(--lumiverse-text-dim); transition: transform var(--lumiverse-transition), background var(--lumiverse-transition); }
     .rw-tog input:checked + .rw-tog-sl { background: color-mix(in srgb, var(--rw-accent) 42%, transparent); }
     .rw-tog input:checked + .rw-tog-sl::before { transform: translateX(15px); background: var(--rw-accent); }
     .rw-tog input:focus-visible + .rw-tog-sl { box-shadow: 0 0 0 2px color-mix(in srgb, var(--rw-accent) 35%, transparent); }
@@ -265,30 +274,31 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     .rw-len-row input[type=range] { flex: 1; min-width: 70px; accent-color: var(--rw-accent); height: 4px; cursor: pointer; }
 
     /* ── Status lines ── */
-    .rw-status { font-size: 11px; color: var(--lumiverse-text-muted); min-height: 15px; }
+    .rw-status { font-size: calc(11px * var(--lumiverse-font-scale, 1)); color: var(--lumiverse-text-muted); min-height: 15px; }
     .rw-status.err { color: var(--lumiverse-danger); }
     #rw-cap { color: var(--lumiverse-text-muted); }
     #rw-cap.err { color: var(--lumiverse-danger); }
-    .rw-delta { font-size: 11px; color: var(--lumiverse-text-muted); font-variant-numeric: tabular-nums; }
+    .rw-delta { font-size: calc(11px * var(--lumiverse-font-scale, 1)); color: var(--lumiverse-text-muted); font-variant-numeric: tabular-nums; }
 
     /* ── Diff ── */
-    .rw-diff { padding: 9px 11px; background: var(--lumiverse-fill); border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); font-size: 13px; line-height: 1.55; white-space: pre-wrap; max-height: 220px; overflow-y: auto; color: var(--lumiverse-text); }
+    .rw-diff { padding: 9px 11px; background: var(--lumiverse-fill); border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); font-size: calc(13px * var(--lumiverse-font-scale, 1)); line-height: 1.55; white-space: pre-wrap; max-height: 220px; overflow-y: auto; color: var(--lumiverse-text); }
     .rw-diff ins { background: color-mix(in srgb, var(--lumiverse-success) 24%, transparent); text-decoration: none; border-radius: 2px; }
     .rw-diff del { color: var(--lumiverse-danger); text-decoration: line-through; opacity: .8; }
 
     /* ── Managed-style list items ── */
-    .rw-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill); transition: border-color .15s ease; }
+    .rw-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill); transition: border-color var(--lumiverse-transition-fast); }
     .rw-item:hover { border-color: var(--lumiverse-border-hover); }
-    .rw-item-name { flex: 1; min-width: 0; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .rw-iconbtn { flex: 0 0 auto; width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid transparent; border-radius: var(--lumiverse-radius-sm); background: transparent; color: var(--lumiverse-text-muted); cursor: pointer; font-size: 13px; transition: background .12s ease, color .12s ease; }
+    .rw-item-name { flex: 1; min-width: 0; font-size: calc(12.5px * var(--lumiverse-font-scale, 1)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rw-iconbtn { flex: 0 0 auto; width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid transparent; border-radius: var(--lumiverse-radius-sm); background: transparent; color: var(--lumiverse-text-muted); cursor: pointer; font-size: calc(13px * var(--lumiverse-font-scale, 1)); transition: background var(--lumiverse-transition-fast), color var(--lumiverse-transition-fast); }
     .rw-iconbtn:hover { background: var(--lumiverse-fill-hover); color: var(--lumiverse-text); }
-    .rw-subhd { font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--lumiverse-text-muted); margin-top: 2px; }
+    .rw-subhd { font-size: calc(10px * var(--lumiverse-font-scale, 1)); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--lumiverse-text-muted); margin-top: 2px; }
+    .rw-empty { font-size: calc(12px * var(--lumiverse-font-scale, 1)); line-height: 1.5; color: var(--lumiverse-text-muted); padding: 4px 2px; }
 
     /* ── Cost panel (details) ── */
-    .rw-cost { border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill); font-size: 12px; }
+    .rw-cost { border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill); font-size: calc(12px * var(--lumiverse-font-scale, 1)); }
     .rw-cost > summary { cursor: pointer; user-select: none; padding: 8px 11px; list-style: none; display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--lumiverse-text-muted); }
     .rw-cost > summary::-webkit-details-marker { display: none; }
-    .rw-cost > summary::before { content: ""; order: 2; flex: 0 0 auto; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform .2s ease; opacity: .7; }
+    .rw-cost > summary::before { content: ""; order: 2; flex: 0 0 auto; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform var(--lumiverse-transition); opacity: .7; }
     .rw-cost[open] > summary::before { transform: rotate(45deg); }
     .rw-cost-total { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--lumiverse-text); font-weight: 600; }
     .rw-cost-body { padding: 2px 11px 9px; display: flex; flex-direction: column; gap: 3px; border-top: 1px solid var(--lumiverse-border); margin-top: 0; padding-top: 8px; }
@@ -297,17 +307,18 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
     /* ── Tabs ── */
     .rw-tabs { display: flex; gap: 3px; background: var(--lumiverse-fill-medium); border-radius: var(--lumiverse-radius-md); padding: 3px; margin: 4px 0 2px; }
-    .rw-tab { flex: 1; text-align: center; font: inherit; font-size: 11.5px; font-weight: 600; padding: 6px 4px; border: 0; border-radius: var(--lumiverse-radius-sm); background: transparent; color: var(--lumiverse-text-muted); cursor: pointer; transition: background .15s ease, color .15s ease; }
+    .rw-tab { flex: 1; text-align: center; font: inherit; font-size: calc(11.5px * var(--lumiverse-font-scale, 1)); font-weight: 600; padding: 6px 4px; border: 0; border-radius: var(--lumiverse-radius-sm); background: transparent; color: var(--lumiverse-text-muted); cursor: pointer; transition: background var(--lumiverse-transition-fast), color var(--lumiverse-transition-fast); }
     .rw-tab:hover { color: var(--lumiverse-text); }
     .rw-tab.on { background: color-mix(in srgb, var(--rw-accent) 24%, transparent); color: #fff; }
     .rw-pane { display: none; flex-direction: column; }
     .rw-pane.on { display: flex; }
 
     /* ── Style chip grid ── */
-    .rw-style-sel { margin-left: auto; font-size: 11px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--lumiverse-text-muted); max-width: 58%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .rw-cgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
-    .rw-chip { display: flex; align-items: center; gap: 6px; text-align: left; padding: 0 10px; height: 29px; font: inherit; font-size: 11.5px; font-weight: 600; border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill); color: var(--lumiverse-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; transition: background .15s ease, border-color .15s ease, color .15s ease; }
+    .rw-style-sel { margin-left: auto; font-size: calc(11px * var(--lumiverse-font-scale, 1)); font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--lumiverse-text-muted); max-width: 58%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rw-cgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .rw-chip { display: flex; align-items: center; gap: 6px; text-align: left; padding: 0 9px; height: 25px; font: inherit; font-size: calc(11.5px * var(--lumiverse-font-scale, 1)); font-weight: 600; border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill); color: var(--lumiverse-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; transition: background var(--lumiverse-transition-fast), border-color var(--lumiverse-transition-fast), color var(--lumiverse-transition-fast); }
     .rw-chip:hover { border-color: var(--lumiverse-border-hover); background: var(--lumiverse-fill-hover); }
+    .rw-chip:active { transform: translateY(1px); }
     .rw-chip.on { border-color: var(--rw-accent); background: color-mix(in srgb, var(--rw-accent) 24%, transparent); color: #fff; }
     .rw-chip.wide { grid-column: 1 / -1; }
     .rw-chip.auto { border-color: color-mix(in srgb, var(--rw-accent) 40%, transparent); background: color-mix(in srgb, var(--rw-accent) 13%, transparent); color: var(--rw-accent-text); }
@@ -329,11 +340,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     /* ── Narrow PANEL (container-keyed, not viewport — the drawer width is independent
        of the viewport): single-column grids + larger touch targets for the most-tapped controls. ── */
     @container rw (max-width: 360px) {
-      .rw-tog-grid, .rw-cgrid { grid-template-columns: 1fr; }
+      .rw-tog-grid { grid-template-columns: 1fr; }
       .rw-iconbtn { width: 34px; height: 34px; }
       .rw-actbtn { width: 38px; height: 36px; }
       .rw-tab { padding: 9px 4px; }
-      .rw-chip { height: 38px; }
       .rw-actions { flex-wrap: wrap; }
     }
 
@@ -584,6 +594,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let pendingConnId = ""
   let lastConfig: RewriteConfig | null = null
   let running = false
+  // True while a rewrite result is shown but not yet applied — freezes Watch auto-capture so a
+  // stray selection can't swap the apply target out from under a pending (especially multi) result.
+  let resultPending = false
   let editingProfileId: string | null = null
 
   function rebuildStyleOptions() {
@@ -622,6 +635,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
   function renderStyleMgmt() {
     customProfListEl.replaceChildren()
+    if (customProfilesList.length === 0) {
+      const empty = ctx.dom.createElement("div"); empty.className = "rw-empty"
+      empty.textContent = "No saved styles yet — create one above, or save a custom prompt as a style."
+      customProfListEl.appendChild(empty)
+    }
     for (const p of customProfilesList) {
       const row = ctx.dom.createElement("div"); row.className = "rw-item"
       const lab = ctx.dom.createElement("span"); lab.className = "rw-item-name"; lab.textContent = p.name
@@ -856,7 +874,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       multiCapture = { chatId, segments: multi.segments, sig }
       capture = null
       inputEl.value = multi.segments.map((s) => s.text).join(SEG_SEP)
-      outputEl.readOnly = true
+      // A new capture invalidates any prior result; clear it so it can't be applied to the wrong target.
+      outputEl.value = ""; outputEl.readOnly = true
+      resultPending = false
+      updateDiffView()
       setStatus(capEl, `captured ✓ ${multi.segments.length} messages`)
       schedulePreview()
       return true
@@ -867,14 +888,20 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     result.cap.chatId = chatId
     capture = result.cap
     multiCapture = null
-    outputEl.readOnly = false
+    outputEl.value = ""; outputEl.readOnly = false
+    resultPending = false
     inputEl.value = result.text
+    updateDiffView()
     setStatus(capEl, `captured ✓ from message ${result.cap.messageId.slice(0, 8)} (${result.text.length} chars)`)
     schedulePreview()
     return true
   }
   const onSelectionChange = () => {
     if (!watchEl.checked) return
+    // Don't auto-recapture while a result is shown unapplied — a stray selection would otherwise
+    // clobber the capture (the bug where a multi-message result gets applied to a single message).
+    // Apply, or Alt+R for a deliberate new capture, releases the freeze.
+    if (resultPending) return
     if (debounce) clearTimeout(debounce)
     debounce = setTimeout(doCapture, 200)
   }
@@ -951,7 +978,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const customText = isCustom ? customEl.value.trim() : ""
     if (isCustom && !customText) { setStatus(msgEl, "Enter a custom instruction.", true); return }
     if (!inputEl.value.trim()) { setStatus(msgEl, "Nothing to rewrite — input is empty.", true); return }
-    running = true; runBtn.textContent = "Cancel"; runBtn.setAttribute("aria-busy", "true"); setStatus(msgEl, "")
+    running = true; runBtn.textContent = "Cancel"; runBtn.setAttribute("aria-busy", "true"); setStatus(msgEl, "Rewriting…")
     if (runTimer) clearTimeout(runTimer)
     runTimer = setTimeout(() => {
       runTimer = null
@@ -1076,7 +1103,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         if (inputEl.value.trim()) schedulePreview()
         break
       }
-      case "rewrite_result": endRun(); outputEl.value = m.text; setStatus(msgEl, `Done.${m.tokens ? ` · prompt ~${m.tokens} tok` : ""}`); updateDiffView(); if (autoApplyEl.checked && capture) applyBtn.click(); break
+      case "rewrite_result": endRun(); outputEl.value = m.text; resultPending = true; setStatus(msgEl, `Done.${m.tokens ? ` · prompt ~${m.tokens} tok` : ""}`); updateDiffView(); if (autoApplyEl.checked && capture) applyBtn.click(); break
       case "rewrite_multi_result": {
         endRun()
         if (multiCapture) {
@@ -1087,6 +1114,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           }
           outputEl.value = multiCapture.segments.map((s) => s.output ?? "").join(SEG_SEP)
           outputEl.readOnly = true
+          resultPending = true
           const n = multiCapture.segments.filter((s) => s.output != null).length
           setStatus(msgEl, `Rewrote ${n} messages — Apply applies all.${m.tokens ? ` · prompt ~${m.tokens} tok` : ""}`)
           updateDiffView()
@@ -1096,13 +1124,14 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       }
       case "rewrite_error": endRun(); setStatus(msgEl, m.error, true); break
       case "rewrite_cancelled": endRun(); setStatus(msgEl, "Cancelled."); break
-      case "apply_done": applyBtn.disabled = false; undoBtn.disabled = !m.canUndo; redoBtn.disabled = !m.canRedo; setStatus(msgEl, "Applied to message ✓"); break
+      case "apply_done": applyBtn.disabled = false; resultPending = false; undoBtn.disabled = !m.canUndo; redoBtn.disabled = !m.canRedo; setStatus(msgEl, "Applied to message ✓"); break
       case "apply_multi_done": {
         applyBtn.disabled = false
         undoBtn.disabled = !m.canUndo
         redoBtn.disabled = !m.canRedo
         setStatus(msgEl, `Applied ${m.applied} message(s).${m.skipped.length ? " Skipped " + m.skipped.length + " (couldn't locate)." : ""}`)
         multiCapture = null
+        resultPending = false
         outputEl.readOnly = false
         break
       }
