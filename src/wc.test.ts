@@ -24,3 +24,11 @@ test("mixed English and spaces not affected by CJK fallback", () => {
   const s = "one two three four five"
   expect(wc(s)).toBe(5)
 })
+
+test("English prose with long-average-word content is NOT misclassified as CJK", () => {
+  // Regression: the previous nonSpace/8 heuristic tripped on English sentences containing a
+  // few long words, returning nonsense (~half the character count) instead of the true word
+  // count. The script-detect gate should keep the fallback off for pure ASCII prose.
+  const s = "The extraordinarily long word disambiguation succeeded"
+  expect(wc(s)).toBe(6)
+})

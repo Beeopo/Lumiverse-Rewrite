@@ -598,6 +598,22 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   // stray selection can't swap the apply target out from under a pending (especially multi) result.
   let resultPending = false
   let editingProfileId: string | null = null
+  // Cached signatures of the last-rendered custom/hidden/auto profile sets — used to skip
+  // a wasteful full re-render on config echoes that didn't change any profile.
+  let lastProfilesSig = ""
+  let lastHiddenSig = ""
+  let lastAutoSig = ""
+  // Watchdog timers for the three AI-action buttons — a dropped/orphaned backend reply used
+  // to leave them disabled forever. Each fires an inline reset() at RUN_WATCHDOG_MS.
+  const aiWatchdogs = new Map<HTMLButtonElement, ReturnType<typeof setTimeout>>()
+  function armAiWatchdog(btn: HTMLButtonElement, reset: () => void) {
+    clearAiWatchdog(btn)
+    aiWatchdogs.set(btn, setTimeout(() => { aiWatchdogs.delete(btn); reset(); setStatus(msgEl, "Timed out waiting for a response. Try again.", true) }, RUN_WATCHDOG_MS))
+  }
+  function clearAiWatchdog(btn: HTMLButtonElement) {
+    const t = aiWatchdogs.get(btn)
+    if (t) { clearTimeout(t); aiWatchdogs.delete(btn) }
+  }
 
   function rebuildStyleOptions() {
     const cur = styleEl.value
@@ -706,10 +722,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (!lastConfig) { setStatus(msgEl, "Settings not loaded yet.", true); return }
     const { customProfiles, customPrompts, hiddenProfiles, usePrevMessages, prevMessageCount,
       speakerAware, useCharCard, useUserPersona, useMemory, useLorebook,
-      lengthPct, concise, autoApply } = lastConfig
+      lengthPct, concise, autoApply, historyDepth, showDiff } = lastConfig
+    // historyDepth + showDiff are both accepted by sanitizeImport — include them so an
+    // export→import round-trip preserves a customized value instead of silently reverting.
     const obj = { version: 1, customProfiles, customPrompts, hiddenProfiles, usePrevMessages,
       prevMessageCount, speakerAware, useCharCard, useUserPersona, useMemory, useLorebook,
-      lengthPct, concise, autoApply }
+      lengthPct, concise, autoApply, historyDepth, showDiff }
     const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" })
     const a = document.createElement("a")
     a.href = URL.createObjectURL(blob)
@@ -733,6 +751,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   refineBtn.addEventListener("click", () => {
     if (!customEl.value.trim()) { setStatus(msgEl, "Enter a custom instruction to refine.", true); return }
     refineBtn.disabled = true; refineBtn.innerHTML = aiBtn("Refining…")
+    armAiWatchdog(refineBtn, () => { refineBtn.disabled = false; refineBtn.innerHTML = aiBtn("Refine") })
     ctx.sendToBackend({ type: "refine_prompt", text: customEl.value, connectionId: connEl.value })
   })
 
@@ -753,11 +772,20 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     })
     if (!confirmed) return
     ctx.sendToBackend({ type: "reset_config" })
+    // Clear local session state that survives a config re-sync — the backend's config echo
+    // only refreshes form values, so without this the panel keeps a stale capture/output/
+    // "Update" profile-edit state after reset.
+    capture = null; multiCapture = null; resultPending = false
+    inputEl.value = ""; outputEl.value = ""; outputEl.readOnly = false
+    editingProfileId = null; newProfAdd.textContent = "Add style"
+    newProfName.value = ""; newProfPrompt.value = ""
+    setStatus(capEl, ""); updateDiffView()
   })
 
   architectBtn.addEventListener("click", () => {
     if (!archDescEl.value.trim()) { setStatus(msgEl, "Enter a description for the AI to generate a style.", true); return }
     architectBtn.disabled = true; architectBtn.innerHTML = aiBtn("Generating…")
+    armAiWatchdog(architectBtn, () => { architectBtn.disabled = false; architectBtn.innerHTML = aiBtn("AI generate style") })
     ctx.sendToBackend({ type: "architect_style", description: archDescEl.value, connectionId: connEl.value })
   })
 
@@ -766,6 +794,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (!a.chatId || !a.characterId) { setStatus(msgEl, "Open a chat with a character first.", true); return }
     if (!connEl.value) { setStatus(msgEl, "Select a connection first.", true); return }
     autoStyleBtn.disabled = true; setStatus(msgEl, "Generating a chat style…")
+    armAiWatchdog(autoStyleBtn, () => { autoStyleBtn.disabled = false })
     ctx.sendToBackend({ type: "gen_autoprofile", chatId: a.chatId, characterId: a.characterId, connectionId: connEl.value })
   })
 
@@ -782,8 +811,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (pendingConnId && [...connEl.options].some(o => o.value === pendingConnId)) connEl.value = pendingConnId
   }
 
-  rebuildStyleOptions()
-  renderStyleMgmt()
+  // Initial style paint runs from the `config` handler once real data lands — no need to
+  // render empty defaults into a drawer the user hasn't opened yet.
 
   let customPromptsList: string[] = []
   function repopulateSaved() {
@@ -898,17 +927,19 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   }
   const onSelectionChange = () => {
     if (!watchEl.checked) return
-    // Don't auto-recapture while a result is shown unapplied — a stray selection would otherwise
-    // clobber the capture (the bug where a multi-message result gets applied to a single message).
-    // Apply, or Alt+R for a deliberate new capture, releases the freeze.
-    if (resultPending) return
+    // Freeze auto-recapture while a rewrite is in flight OR a result is shown unapplied.
+    // Without the `running` guard, a stray selection between Run and result-arrival would
+    // swap `capture`/`multiCapture` and the result would land on the wrong target.
+    if (running || resultPending) return
     if (debounce) clearTimeout(debounce)
     debounce = setTimeout(doCapture, 200)
   }
   document.addEventListener("selectionchange", onSelectionChange)
   // Alt+R: capture the current selection on demand (works even with Watch off).
+  // Blocked during an in-flight run for the same wrong-target reason.
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === "r" || e.key === "R")) {
+      if (running) return
       if (doCapture()) e.preventDefault()
     }
   }
@@ -951,7 +982,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   styleEl.addEventListener("change", () => { customWrap.style.display = styleEl.value === "__custom__" ? "flex" : "none"; renderStyleChips(); schedulePreview() })
   customSavedEl.addEventListener("change", () => { if (customSavedEl.value) { customEl.value = customSavedEl.value; schedulePreview() } })
   // Typing into the input or a custom instruction changes the estimate too.
-  inputEl.addEventListener("input", schedulePreview)
+  inputEl.addEventListener("input", () => { schedulePreview(); updateDiffView() })
   customEl.addEventListener("input", schedulePreview)
   // Persist the cost panel's collapse state and refresh the estimate when expanded.
   costEl.addEventListener("toggle", () => {
@@ -969,6 +1000,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     runBtn.disabled = false
     runBtn.textContent = "Run"
     runBtn.removeAttribute("aria-busy")
+    // Clear the Watch freeze on every run end; success branches re-set it right after
+    // when a valid result lands. Prevents a prior success + subsequent cancel/error from
+    // leaving Watch stuck (mobile has no Alt+R escape).
+    resultPending = false
     if (runTimer) { clearTimeout(runTimer); runTimer = null }
   }
 
@@ -1024,6 +1059,16 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       if (multiCapture.chatId !== ctx.getActiveChat().chatId) {
         setStatus(msgEl, "That selection is from a different chat — switch back or re-select here.", true); return
       }
+      // Per-segment stale-capture guard — mirrors the single-apply liveR check. If ANY of the
+      // touched messages changed since capture (edit/swipe/regenerate), refuse the whole batch
+      // rather than trusting the backend normForCompare guard alone.
+      for (const s of multiCapture.segments) {
+        const liveR = liveRenderedFor(s.messageId)
+        if (liveR === null || liveR !== s.R) {
+          setStatus(msgEl, "One or more messages changed since you selected them. Re-select and run again.", true)
+          return
+        }
+      }
       applyBtn.disabled = true; setStatus(msgEl, "Applying…")
       ctx.sendToBackend({ type: "apply_multi", chatId: multiCapture.chatId, items })
       return
@@ -1077,7 +1122,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         lenEl.value = String(Math.min(cfg.lengthPct, 200))
         lenValEl.value = String(cfg.lengthPct)
         autoApplyEl.checked = cfg.autoApply
-        debugEl.checked = cfg.debug ?? false
+        debugEl.checked = cfg.debug
         ctxPrev.checked = cfg.usePrevMessages
         ctxChar.checked = cfg.useCharCard
         ctxPersona.checked = cfg.useUserPersona
@@ -1086,19 +1131,28 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         ctxLore.checked = cfg.useLorebook
         customPromptsList = cfg.customPrompts || []
         repopulateSaved()
+        // Skip rebuilding the style-management list if custom/hidden profiles didn't change —
+        // otherwise every toggle of a Hide-built-in checkbox rebuilds the checkboxes and
+        // steals focus from the one the user just clicked.
+        const nextCustoms = JSON.stringify(cfg.customProfiles || [])
+        const nextHidden = JSON.stringify(cfg.hiddenProfiles || [])
+        const nextAutos = JSON.stringify(cfg.autoProfiles || {})
+        const profilesChanged = nextCustoms !== lastProfilesSig || nextHidden !== lastHiddenSig || nextAutos !== lastAutoSig
+        lastProfilesSig = nextCustoms; lastHiddenSig = nextHidden; lastAutoSig = nextAutos
         customProfilesList = cfg.customProfiles || []
         hiddenProfilesList = cfg.hiddenProfiles || []
         autoProfilesMap = cfg.autoProfiles || {}
-        rebuildStyleOptions()
-        renderStyleMgmt()
+        if (profilesChanged) { rebuildStyleOptions(); renderStyleMgmt() }
         // Reflect the persisted cost-panel collapse state. Set the property directly to
         // avoid round-tripping the toggle handler back into update_config.
         costEl.open = !cfg.costCollapsed
-        // Restore diff toggle and apply its show/hide effect.
-        diffToggle.checked = cfg.showDiff ?? false
+        // Restore diff toggle and apply its show/hide effect. Fields are non-optional in the
+        // RewriteConfig type and always defaulted via DEFAULT_CONFIG merge in loadConfig.
+        diffToggle.checked = cfg.showDiff
         updateDiffView()
-        // Restore history depth input.
-        histDepthEl.value = String(cfg.historyDepth ?? 30)
+        histDepthEl.value = String(cfg.historyDepth)
+        // Surface a persistence-failure signal from update_config / reset_config.
+        if (m.persisted === false) setStatus(msgEl, "Settings could not be saved to disk — changes may not survive a restart.", true)
         // Refresh the estimate once after the initial sync if there's already input.
         if (inputEl.value.trim()) schedulePreview()
         break
@@ -1113,7 +1167,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             if (seg) seg.output = r.output
           }
           outputEl.value = multiCapture.segments.map((s) => s.output ?? "").join(SEG_SEP)
-          outputEl.readOnly = true
+          // outputEl.readOnly was already set true by doCapture when the multi-capture was
+          // taken; nothing clears it between capture and result, so no need to reassert.
           resultPending = true
           const n = multiCapture.segments.filter((s) => s.output != null).length
           setStatus(msgEl, `Rewrote ${n} messages — Apply applies all.${m.tokens ? ` · prompt ~${m.tokens} tok` : ""}`)
@@ -1122,8 +1177,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         }
         break
       }
-      case "rewrite_error": endRun(); setStatus(msgEl, m.error, true); break
-      case "rewrite_cancelled": endRun(); setStatus(msgEl, "Cancelled."); break
+      // Terminal error/cancel states must fully release UI locks — mirrors endRun's role of
+      // clearing the Watch freeze. Without this, multi-rewrite errors leave outputEl frozen
+      // read-only with stale segment content and no way to edit or re-run without a reload.
+      case "rewrite_error": endRun(); outputEl.readOnly = false; multiCapture = null; setStatus(msgEl, m.error, true); break
+      case "rewrite_cancelled": endRun(); outputEl.readOnly = false; multiCapture = null; setStatus(msgEl, "Cancelled."); break
       case "apply_done": applyBtn.disabled = false; resultPending = false; undoBtn.disabled = !m.canUndo; redoBtn.disabled = !m.canRedo; setStatus(msgEl, "Applied to message ✓"); break
       case "apply_multi_done": {
         applyBtn.disabled = false
@@ -1135,19 +1193,36 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         outputEl.readOnly = false
         break
       }
-      case "apply_error": applyBtn.disabled = false; setStatus(msgEl, m.error, true); break
+      // apply_error covers both single and multi failures (backend uses one variant). Fully
+      // reset UI locks the same way apply_multi_done does, so Watch + output stay usable.
+      case "apply_error": applyBtn.disabled = false; resultPending = false; multiCapture = null; outputEl.readOnly = false; setStatus(msgEl, m.error, true); break
       case "undo_done": undoBtn.disabled = !m.canUndo; redoBtn.disabled = !m.canRedo; setStatus(msgEl, "Reverted ✓"); break
       case "undo_error": setStatus(msgEl, m.error, true); break
       case "redo_done": undoBtn.disabled = !m.canUndo; redoBtn.disabled = !m.canRedo; setStatus(msgEl, "Reapplied ✓"); break
       case "redo_error": setStatus(msgEl, m.error, true); break
       case "history": undoBtn.disabled = !m.canUndo; redoBtn.disabled = !m.canRedo; break
       case "connections": populateConnections(m.connections); break
-      case "refine_result": refineBtn.disabled = false; refineBtn.innerHTML = aiBtn("Refine"); customEl.value = m.text; setStatus(msgEl, "Refined."); break
-      case "refine_error": refineBtn.disabled = false; refineBtn.innerHTML = aiBtn("Refine"); setStatus(msgEl, m.error, true); break
-      case "architect_result": architectBtn.disabled = false; architectBtn.innerHTML = aiBtn("AI generate style"); newProfName.value = m.name; newProfPrompt.value = m.prompt; setStatus(msgEl, "Style drafted — review and Add."); break
-      case "architect_error": architectBtn.disabled = false; architectBtn.innerHTML = aiBtn("AI generate style"); setStatus(msgEl, m.error, true); break
-      case "autoprofile_result": autoStyleBtn.disabled = false; autoProfilesMap[m.chatId] = { name: m.name, prompt: m.prompt }; rebuildStyleOptions(); styleEl.value = "auto:" + m.chatId; styleEl.dispatchEvent(new Event("change")); setStatus(msgEl, `Style ready: ${m.name}`); break
-      case "autoprofile_error": autoStyleBtn.disabled = false; setStatus(msgEl, m.error, true); break
+      case "refine_result": clearAiWatchdog(refineBtn); refineBtn.disabled = false; refineBtn.innerHTML = aiBtn("Refine"); customEl.value = m.text; setStatus(msgEl, "Refined."); break
+      case "refine_error": clearAiWatchdog(refineBtn); refineBtn.disabled = false; refineBtn.innerHTML = aiBtn("Refine"); setStatus(msgEl, m.error, true); break
+      case "architect_result": clearAiWatchdog(architectBtn); architectBtn.disabled = false; architectBtn.innerHTML = aiBtn("AI generate style"); newProfName.value = m.name; newProfPrompt.value = m.prompt; setStatus(msgEl, "Style drafted — review and Add."); break
+      case "architect_error": clearAiWatchdog(architectBtn); architectBtn.disabled = false; architectBtn.innerHTML = aiBtn("AI generate style"); setStatus(msgEl, m.error, true); break
+      case "autoprofile_result": {
+        clearAiWatchdog(autoStyleBtn); autoStyleBtn.disabled = false
+        autoProfilesMap[m.chatId] = { name: m.name, prompt: m.prompt }
+        rebuildStyleOptions()
+        // Only auto-select the new style if the user is still in the chat that was generating.
+        // rebuildStyleOptions only adds the `auto:<chatId>` option for the ACTIVE chat, so a
+        // switched-chat set would silently no-op and confusingly say "Style ready".
+        if (ctx.getActiveChat().chatId === m.chatId) {
+          styleEl.value = "auto:" + m.chatId
+          styleEl.dispatchEvent(new Event("change"))
+          setStatus(msgEl, `Style ready: ${m.name}`)
+        } else {
+          setStatus(msgEl, `Style saved for that chat: ${m.name}`)
+        }
+        break
+      }
+      case "autoprofile_error": clearAiWatchdog(autoStyleBtn); autoStyleBtn.disabled = false; setStatus(msgEl, m.error, true); break
       case "debug": {
         const entries = (m as { type: "debug"; entries: DebugEntry[] }).entries
         if (!entries.length) { setStatus(msgEl, "Debug log is empty (enable Debug log, then run a rewrite)."); break }
@@ -1177,7 +1252,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
   })
 
-  redoBtn.disabled = true
+  // Initial button states are set by the `history` handler once it returns.
   ctx.sendToBackend({ type: "get_config" })
   ctx.sendToBackend({ type: "get_connections" })
   ctx.sendToBackend({ type: "get_history" })
@@ -1188,6 +1263,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (debounce) clearTimeout(debounce)
     if (runTimer) clearTimeout(runTimer)
     if (previewTimer) clearTimeout(previewTimer)
+    for (const t of aiWatchdogs.values()) clearTimeout(t)
+    aiWatchdogs.clear()
     unsub()
     removeStyle()
     ctx.dom.cleanup()

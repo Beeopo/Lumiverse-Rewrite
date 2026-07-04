@@ -8,34 +8,35 @@ export function sanitizeImport(raw: unknown): Partial<RewriteConfig> {
   const obj = raw as Record<string, unknown>
   const out: Partial<RewriteConfig> = {}
 
-  // customProfiles: array of {id, name, prompt} objects, cap 100
+  // customProfiles: array of {id, name, prompt} objects, cap 100 — every field must be a
+  // non-empty trimmed string. Without the trim guard a crafted import can inject 100 blank
+  // rows that render as ghost entries in the style manager and, if selected, fall through
+  // resolveProfile to an empty prompt.
   if (Array.isArray(obj.customProfiles)) {
     const cleaned = (obj.customProfiles as unknown[])
-      .filter(
-        (item) =>
-          item !== null &&
-          typeof item === "object" &&
-          !Array.isArray(item) &&
-          typeof (item as Record<string, unknown>).id === "string" &&
-          typeof (item as Record<string, unknown>).name === "string" &&
-          typeof (item as Record<string, unknown>).prompt === "string",
-      )
+      .filter((item) => {
+        if (item === null || typeof item !== "object" || Array.isArray(item)) return false
+        const r = item as Record<string, unknown>
+        return typeof r.id === "string" && r.id.trim().length > 0 &&
+               typeof r.name === "string" && r.name.trim().length > 0 &&
+               typeof r.prompt === "string" && r.prompt.trim().length > 0
+      })
       .slice(0, 100) as { id: string; name: string; prompt: string }[]
     out.customProfiles = cleaned
   }
 
-  // customPrompts: array of strings, cap 100
+  // customPrompts: array of non-empty strings, cap 100
   if (Array.isArray(obj.customPrompts)) {
     out.customPrompts = (obj.customPrompts as unknown[])
-      .filter((x) => typeof x === "string")
-      .slice(0, 100) as string[]
+      .filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+      .slice(0, 100)
   }
 
-  // hiddenProfiles: array of strings, cap 100
+  // hiddenProfiles: array of non-empty strings, cap 100
   if (Array.isArray(obj.hiddenProfiles)) {
     out.hiddenProfiles = (obj.hiddenProfiles as unknown[])
-      .filter((x) => typeof x === "string")
-      .slice(0, 100) as string[]
+      .filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+      .slice(0, 100)
   }
 
   // Boolean flags

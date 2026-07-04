@@ -121,3 +121,23 @@ test("showDiff: non-boolean value is ignored", () => {
   const out = sanitizeImport({ showDiff: "yes" })
   expect(out).not.toHaveProperty("showDiff")
 })
+
+test("customProfiles: entries with empty-string fields are dropped", () => {
+  const out = sanitizeImport({
+    customProfiles: [
+      { id: "", name: "", prompt: "" },
+      { id: "cp_1", name: "  ", prompt: "keep me" },
+      { id: "cp_2", name: "Real", prompt: "Real prompt" },
+    ],
+  })
+  expect(out.customProfiles).toEqual([{ id: "cp_2", name: "Real", prompt: "Real prompt" }])
+})
+
+test("customPrompts and hiddenProfiles: empty/whitespace-only strings are dropped", () => {
+  const out = sanitizeImport({
+    customPrompts: ["", "  ", "keep this"],
+    hiddenProfiles: ["", "expand", "  "],
+  })
+  expect(out.customPrompts).toEqual(["keep this"])
+  expect(out.hiddenProfiles).toEqual(["expand"])
+})

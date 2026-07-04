@@ -44,6 +44,31 @@ test("rejects an out-of-bounds re (the multi-paragraph capture bug)", () => {
   expect(mapRenderedSpanToRaw(R, raw, 0, R.length)).not.toBeNull() // in-bounds → maps
 })
 
+test("stale selection whose normalized text SUBSUMES the raw span is rejected (no half-application)", () => {
+  // Regression: previously the guard was `sel.includes(rawSpan) || rawSpan.includes(sel)`,
+  // so selecting three words in a stale rendered R that later reduced to two words in raw
+  // could splice into just the overlapping two, silently dropping a word from user intent.
+  const liveRaw = "The fox jumps over the dog"
+  const staleR = "The quick brown fox jumps over the log"
+  const rs = staleR.indexOf("brown fox jumps")
+  const out = spliceRewrite(liveRaw, staleR, rs, rs + "brown fox jumps".length, "REPL")
+  expect(out).toBeNull()
+})
+
+test("spliceRewrite rejects a mid-surrogate splice boundary", () => {
+  const raw = "hi 😀 world" // 11 code units, 😀 at 3-4
+  // rs=3, re=4 lands mid-surrogate on both edges → reject.
+  expect(spliceRewrite(raw, raw, 3, 4, "X")).toBeNull()
+  // Full emoji [3,5) is valid → splices fine.
+  expect(spliceRewrite(raw, raw, 3, 5, "X")).toBe("hi X world")
+})
+
+test("mapRenderedSpanToRaw handles a single-char rendered token wrapped in transforms", () => {
+  // Regression: island-demotion used to nuke every anchor for '*a*' pattern and return null,
+  // making it impossible to rewrite a bolded 'I' or single italic character.
+  expect(mapRenderedSpanToRaw("a", "*a*", 0, 1)).not.toBeNull()
+})
+
 test("spliceRewrite rejects a stale selection that maps to a coincidental anchor", () => {
   // Stale capture: R (what the user selected against) no longer matches the live raw.
   // The shared prefix/suffix give alignExact a foothold, so it CAN map the selection's

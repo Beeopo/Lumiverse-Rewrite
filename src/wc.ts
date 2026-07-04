@@ -11,8 +11,10 @@ export function wc(s: string): number {
   if (!t) return 0
   const words = (t.match(/\S+/g) || []).length
   const nonSpace = t.replace(/\s+/g, "").length
-  // Whitespace word-splitting drastically under-counts CJK/no-space scripts; when the
-  // word count is implausibly low for the character count, estimate ~2 chars per word.
-  if (nonSpace > 0 && words < nonSpace / 8) return Math.max(words, Math.round(nonSpace / 2))
+  // Only trip the CJK/no-space fallback when a script-detect actually finds no-space
+  // characters — otherwise long-average-word English prose (rare, but real) was tripping
+  // the /8 heuristic and returning nonsense counts. Test both branches independently.
+  const hasNoSpaceScript = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}]/u.test(t)
+  if (hasNoSpaceScript && nonSpace > 0 && words < nonSpace / 3) return Math.max(words, Math.round(nonSpace / 2))
   return words
 }

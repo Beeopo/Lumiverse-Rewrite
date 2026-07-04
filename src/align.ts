@@ -29,6 +29,11 @@ function alignExact(R: string, A: string, rs: number, re: number): { as: number;
   // Demote ISLAND matches: a matched raw char flanked by raw-only chars on BOTH
   // sides is an incidental match inside a transform token, not a real anchor.
   // Iterate to a fixpoint (demoting one island can expose another).
+  // Track the anchor count so we never demote the LAST anchor — a single-char rendered
+  // token wrapped in transforms (bold "I", italic name-initial, one-char code span) is
+  // all-islands and would otherwise nuke every anchor and force the copy-fallback path.
+  let anchorCount = 0;
+  for (let a = 0; a < m; a++) if (matchedRaw[a]) anchorCount++;
   let changed = true;
   while (changed) {
     changed = false;
@@ -37,7 +42,7 @@ function alignExact(R: string, A: string, rs: number, re: number): { as: number;
       if (rj < 0) continue;
       const leftRO = (rj > 0) && !matchedRaw[rj - 1];
       const rightRO = (rj < m - 1) && !matchedRaw[rj + 1];
-      if (leftRO && rightRO) { mr[k] = -1; matchedRaw[rj] = 0; changed = true; }
+      if (leftRO && rightRO && anchorCount > 1) { mr[k] = -1; matchedRaw[rj] = 0; anchorCount--; changed = true; }
     }
   }
   // If island-demotion removed every match, there are no anchors at all → cannot locate.
@@ -177,8 +182,21 @@ export function spliceRewrite(
   // just fetched, so it can't be bypassed by a frontend DOM-render race.
   const sel = normForCompare(R.slice(rs, re))
   const rawSpan = normForCompare(rawA.slice(span.as, span.ae))
-  if (sel.length > 0 && !(sel === rawSpan || rawSpan.includes(sel) || sel.includes(rawSpan))) {
-    return null
-  }
+  // Require equality after normalization. normForCompare already strips markdown markers,
+  // whitespace, and common punctuation, so a legitimate rendered↔raw pair matches exactly.
+  // The earlier substring-tolerant guard (sel.includes(rawSpan) || rawSpan.includes(sel))
+  // let mid-word stale-edit races through — e.g. selecting three words that overlap two
+  // remaining words in an edited message silently applied to only the overlap.
+  if (sel !== rawSpan) return null
+  // Reject splices whose boundaries would split a UTF-16 surrogate pair — an orphan half
+  // surrogate is invalid UTF-16 and breaks JSON serialize / markdown / codepoint passes.
+  if (isMidSurrogate(rawA, span.as) || isMidSurrogate(rawA, span.ae)) return null
   return rawA.slice(0, span.as) + output + rawA.slice(span.ae)
+}
+
+function isMidSurrogate(s: string, i: number): boolean {
+  if (i <= 0 || i >= s.length) return false
+  const hi = s.charCodeAt(i - 1)
+  const lo = s.charCodeAt(i)
+  return hi >= 0xD800 && hi <= 0xDBFF && lo >= 0xDC00 && lo <= 0xDFFF
 }

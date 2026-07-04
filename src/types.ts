@@ -74,7 +74,7 @@ export type FrontendMsg =
 
 // Backend → frontend
 export type BackendMsg =
-  | { type: "config"; config: RewriteConfig }
+  | { type: "config"; config: RewriteConfig; persisted?: boolean }
   | { type: "rewrite_result"; text: string; tokens?: number }
   | { type: "rewrite_multi_result"; segments: { messageId: string; output: string }[]; tokens?: number }
   | { type: "rewrite_error"; error: string }
@@ -105,4 +105,7 @@ export interface DebugEntry {
   tokens: number
   ms: number
   error?: string
+  // userId is set by the backend at push time so get_debug can filter to the caller.
+  // Optional so older serialized entries still parse.
+  userId?: string
 }
