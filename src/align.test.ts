@@ -44,6 +44,37 @@ test("rejects an out-of-bounds re (the multi-paragraph capture bug)", () => {
   expect(mapRenderedSpanToRaw(R, raw, 0, R.length)).not.toBeNull() // in-bounds → maps
 })
 
+test("selection that spans a markdown link splices correctly (URL content in raw doesn't break the guard)", () => {
+  // v1.0.2 tightened the stale-guard too far: a legitimate selection that spans across a
+  // markdown link failed because the URL characters (letters, slashes) survive
+  // normForCompare and end up in rawSpan but not in sel. Subsequence check restores
+  // the fix without reintroducing the substring-bypass bug.
+  const raw = "See [Google](https://google.com) here."
+  const R = "See Google here."
+  const out = spliceRewrite(raw, R, 0, R.length, "REPL.")
+  expect(out).not.toBeNull()
+  expect(out).toContain("REPL")
+})
+
+test("large multi-paragraph message above the old 4M-cell cap now splices (v1.0.6)", () => {
+  // Regression: previously n*m > 4M returned null from alignExact and the windowed
+  // fallback couldn't handle full-message selections (no room to bracket). Bumped to 16M.
+  const para = `She turned slowly, her eyes narrowing. "You think you're clever?" she said, voice low. This wasn't the response he had expected, and yet here they were — locked in this dance of wills he had somehow started.`
+  const raw = Array(10).fill(para).join("\n\n")
+  const R = raw.replace(/\n+/g, "")
+  // n*m > 4M (was failing) but < 16M (now succeeds).
+  expect(R.length * raw.length).toBeGreaterThan(4_000_000)
+  const out = spliceRewrite(raw, R, 0, R.length, "REPL")
+  expect(out).not.toBeNull()
+})
+
+test("multi-transform paragraph containing a link splices", () => {
+  const raw = "This is [a link](https://example.com/foo) inside prose."
+  const R = "This is a link inside prose."
+  const out = spliceRewrite(raw, R, 0, R.length, "X.")
+  expect(out).not.toBeNull()
+})
+
 test("stale selection whose normalized text SUBSUMES the raw span is rejected (no half-application)", () => {
   // Regression: previously the guard was `sel.includes(rawSpan) || rawSpan.includes(sel)`,
   // so selecting three words in a stale rendered R that later reduced to two words in raw

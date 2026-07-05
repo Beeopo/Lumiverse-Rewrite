@@ -603,6 +603,15 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let lastProfilesSig = ""
   let lastHiddenSig = ""
   let lastAutoSig = ""
+  // Pre-seed the profile sigs when the frontend locally mutates a profile set before
+  // update_config's echo arrives. Without this, the echo carries a "new" set the sig cache
+  // hasn't seen yet, profilesChanged fires, and renderStyleMgmt destroys the checkbox the
+  // user is still interacting with — the exact focus-theft the sig cache is meant to prevent.
+  function syncProfileSigs() {
+    lastProfilesSig = JSON.stringify(customProfilesList)
+    lastHiddenSig = JSON.stringify(hiddenProfilesList)
+    lastAutoSig = JSON.stringify(autoProfilesMap)
+  }
   // Watchdog timers for the three AI-action buttons — a dropped/orphaned backend reply used
   // to leave them disabled forever. Each fires an inline reset() at RUN_WATCHDOG_MS.
   const aiWatchdogs = new Map<HTMLButtonElement, ReturnType<typeof setTimeout>>()
@@ -674,6 +683,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         customProfilesList = customProfilesList.filter((x) => x.id !== p.id)
         if (editingProfileId === p.id) { editingProfileId = null; newProfAdd.textContent = "Add style"; newProfName.value = ""; newProfPrompt.value = "" }
         ctx.sendToBackend({ type: "update_config", config: { customProfiles: customProfilesList } })
+        syncProfileSigs()
         rebuildStyleOptions(); renderStyleMgmt()
       })
       row.appendChild(lab); row.appendChild(editBtnRow); row.appendChild(del); customProfListEl.appendChild(row)
@@ -688,6 +698,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           ? [...new Set([...hiddenProfilesList, b.id])]
           : hiddenProfilesList.filter((x) => x !== b.id)
         ctx.sendToBackend({ type: "update_config", config: { hiddenProfiles: hiddenProfilesList } })
+        syncProfileSigs()
         rebuildStyleOptions()
       })
       const sl = ctx.dom.createElement("span"); sl.className = "rw-tog-sl"
@@ -705,6 +716,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       editingProfileId = null
       newProfAdd.textContent = "Add style"
       ctx.sendToBackend({ type: "update_config", config: { customProfiles: customProfilesList } })
+      syncProfileSigs()
       newProfName.value = ""; newProfPrompt.value = ""
       rebuildStyleOptions(); renderStyleMgmt()
       setStatus(msgEl, `Updated style "${nm}".`)
@@ -712,6 +724,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       const id = "cp_" + Date.now().toString(36)
       customProfilesList = [...customProfilesList, { id, name: nm, prompt: pr }]
       ctx.sendToBackend({ type: "update_config", config: { customProfiles: customProfilesList } })
+      syncProfileSigs()
       newProfName.value = ""; newProfPrompt.value = ""
       rebuildStyleOptions(); renderStyleMgmt(); styleEl.value = id; styleEl.dispatchEvent(new Event("change"))
       setStatus(msgEl, `Added style "${nm}".`)
@@ -911,10 +924,22 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       schedulePreview()
       return true
     }
-    // Fall back to the single-message path (unchanged).
+    // Fall back to the single-message path.
     const result = captureSelection()
     if (!result) return false
     result.cap.chatId = chatId
+    // Idempotent short-circuit — mirrors the multi path. A stray selectionchange whose
+    // Capture identity (messageId + span + R content) matches the current one must NOT
+    // wipe outputEl/inputEl/resultPending; that's the "text appears then disappears"
+    // symptom where a rendered result was clobbered by a redundant capture.
+    if (capture
+        && capture.messageId === result.cap.messageId
+        && capture.rs === result.cap.rs
+        && capture.re === result.cap.re
+        && capture.R === result.cap.R
+    ) {
+      return true
+    }
     capture = result.cap
     multiCapture = null
     outputEl.value = ""; outputEl.readOnly = false
@@ -927,10 +952,14 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   }
   const onSelectionChange = () => {
     if (!watchEl.checked) return
-    // Freeze auto-recapture while a rewrite is in flight OR a result is shown unapplied.
-    // Without the `running` guard, a stray selection between Run and result-arrival would
-    // swap `capture`/`multiCapture` and the result would land on the wrong target.
-    if (running || resultPending) return
+    // Freeze auto-recapture ONLY while a rewrite is in flight — a stray selection between
+    // Run and result-arrival would swap `capture`/`multiCapture` and (with autoApply) land
+    // on the wrong target. Post-result, re-selection is treated as the user moving on: the
+    // sig-check in doCapture makes it idempotent for the same selection, doCapture clears
+    // `outputEl.value` so manual Apply refuses with "Output is empty", and autoApply on the
+    // last result already fired synchronously in the result handler — so post-result
+    // reselection can't retarget an apply that's already in flight.
+    if (running) return
     if (debounce) clearTimeout(debounce)
     debounce = setTimeout(doCapture, 200)
   }
@@ -1209,6 +1238,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       case "autoprofile_result": {
         clearAiWatchdog(autoStyleBtn); autoStyleBtn.disabled = false
         autoProfilesMap[m.chatId] = { name: m.name, prompt: m.prompt }
+        // Keep sig in sync with the local mutation so the config echo that follows the
+        // backend's autoprofile persistence doesn't trigger a redundant re-render.
+        syncProfileSigs()
         rebuildStyleOptions()
         // Only auto-select the new style if the user is still in the chat that was generating.
         // rebuildStyleOptions only adds the `auto:<chatId>` option for the ACTIVE chat, so a

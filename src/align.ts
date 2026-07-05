@@ -1,6 +1,6 @@
 function alignExact(R: string, A: string, rs: number, re: number): { as: number; ae: number } | null {
   const n = R.length, m = A.length;
-  if (!n || !m || n * m > 4000000) return null; // ponytail: ~2k×2k char cap; null -> caller windows or copy-falls-back
+  if (!n || !m || n * m > 16000000) return null; // ponytail: ~4k×4k char cap (~64MB dp); null -> caller windows or copy-falls-back. Bumped from 4M in v1.0.6 after multi-paragraph messages ~2.5k chars each side tripped the old cap and fell through to null.
   if (rs < 0 || re > n || re < rs) return null;
   let i, j, k, c;
   const dp: Int32Array[] = [];
@@ -138,17 +138,32 @@ export function mapRenderedSpanToRaw(R: string, A: string, rs: number, re: numbe
   const n = R.length, m = A.length;
   if (!n || !m) return null;
   if (rs < 0 || re > n || re < rs) return null;
-  if (n * m <= 4000000) return alignExact(R, A, rs, re);
-  const LEN = 40, MAXSPAN = 800;
+  // Full-message selection: the whole rendered content maps to the whole raw content
+  // by definition, no LCS needed. Skip the exact/windowed paths so oversized messages
+  // (n*m > 16M) don't fail full-message rewrite just because the anchor path has no
+  // room to bracket outside [0, n).
+  if (rs === 0 && re === n) return { as: 0, ae: m };
+  if (n * m <= 16000000) return alignExact(R, A, rs, re);
+  // For truly oversized messages, try progressively shorter anchor lengths — a 40-char
+  // verbatim run may not be uniquely present in highly repetitive prose, but a 60-char one
+  // often is. Try both directions to find the tightest bracketing window that fits the cap.
+  const MAXSPAN = 800;
   const Rn = normForAnchor(R), An = normForAnchor(A);
-  const left = findCleanAnchor(Rn, An, rs, -1, LEN, MAXSPAN);
-  const right = findCleanAnchor(Rn, An, re, 1, LEN, MAXSPAN);
+  // Keep the first (longest) unique anchor found per side. Previously we overwrote both
+  // sides every iteration, so a message that uniquely anchored left at LEN=60 and right
+  // at LEN=40 (repetitive prose) never had both non-null at once and fell to null.
+  let left = null, leftLen = 0, right = null, rightLen = 0;
+  for (const l of [60, 40, 24, 16, 12]) {
+    if (!left) { const p = findCleanAnchor(Rn, An, rs, -1, l, MAXSPAN); if (p) { left = p; leftLen = l } }
+    if (!right) { const p = findCleanAnchor(Rn, An, re, 1, l, MAXSPAN); if (p) { right = p; rightLen = l } }
+    if (left && right) break;
+  }
   const wlo = left ? left.rPos : 0;
   const lo = left ? left.aPos : 0;
-  const whi = right ? right.rPos + LEN : n;
-  const hi = right ? right.aPos + LEN : m;
+  const whi = right ? right.rPos + rightLen : n;
+  const hi = right ? right.aPos + rightLen : m;
   if (wlo > rs || whi < re || lo >= hi || wlo >= whi) return null; // anchors must bracket & stay ordered
-  if ((whi - wlo) * (hi - lo) > 4000000) return null;             // selection too large to window
+  if ((whi - wlo) * (hi - lo) > 16000000) return null;             // selection too large to window
   const loc = alignExact(R.slice(wlo, whi), A.slice(lo, hi), rs - wlo, re - wlo);
   if (!loc) return null;
   return { as: lo + loc.as, ae: lo + loc.ae };
@@ -182,16 +197,28 @@ export function spliceRewrite(
   // just fetched, so it can't be bypassed by a frontend DOM-render race.
   const sel = normForCompare(R.slice(rs, re))
   const rawSpan = normForCompare(rawA.slice(span.as, span.ae))
-  // Require equality after normalization. normForCompare already strips markdown markers,
-  // whitespace, and common punctuation, so a legitimate rendered↔raw pair matches exactly.
-  // The earlier substring-tolerant guard (sel.includes(rawSpan) || rawSpan.includes(sel))
-  // let mid-word stale-edit races through — e.g. selecting three words that overlap two
-  // remaining words in an edited message silently applied to only the overlap.
-  if (sel !== rawSpan) return null
+  // Require `sel` to be a subsequence of `rawSpan`. This is the balance we need:
+  //   - Equality passes trivially (identical characters, obviously a subsequence).
+  //   - Markdown-link / HTML-attribute passes: raw carries URL letters or attribute values
+  //     that normForCompare doesn't strip; those extra characters interleave with the
+  //     rendered content but sel's characters still appear in order inside rawSpan.
+  //   - Stale-race cases still reject: if sel has characters not present in raw at all
+  //     (the "brown fox jumps" case where the user's selection subsumes the mapped span),
+  //     the walk can't finish and returns false.
+  if (sel.length > 0 && !isSubsequenceOf(sel, rawSpan)) return null
   // Reject splices whose boundaries would split a UTF-16 surrogate pair — an orphan half
   // surrogate is invalid UTF-16 and breaks JSON serialize / markdown / codepoint passes.
   if (isMidSurrogate(rawA, span.as) || isMidSurrogate(rawA, span.ae)) return null
   return rawA.slice(0, span.as) + output + rawA.slice(span.ae)
+}
+
+function isSubsequenceOf(needle: string, haystack: string): boolean {
+  if (needle.length > haystack.length) return false
+  let i = 0
+  for (let j = 0; j < haystack.length && i < needle.length; j++) {
+    if (needle.charCodeAt(i) === haystack.charCodeAt(j)) i++
+  }
+  return i === needle.length
 }
 
 function isMidSurrogate(s: string, i: number): boolean {

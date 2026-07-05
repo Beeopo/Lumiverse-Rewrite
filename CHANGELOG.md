@@ -4,6 +4,18 @@ All notable changes to this extension are documented here. The format is based o
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.0.3] — 2026-07-05
+
+Post-1.0.2 polish — fixes surfaced from real-world use.
+
+### Fixed
+- **Full-message rewrites failed on very large messages.** A full-content selection has nothing to bracket outside `[0, n)`, so the windowed anchor path always returned null. The LCS isn't needed here — the whole rendered content maps to the whole raw content by definition. Shortcut added; oversized full-message rewrites now splice in under a millisecond regardless of length.
+- **"Couldn't locate the selection" on multi-paragraph messages.** The `alignExact` cell cap was 4M (~2000×2000 chars), which realistic 10-paragraph messages tripped. Cap bumped to 16M (~4000×4000, ~64MB dp allocation — modern browsers handle it fine). For anything above 16M, the windowed anchor retry loop now keeps the first-found anchor per side and only overwrites empty slots — a message uniquely anchoring left at LEN=60 but right at LEN=40 no longer falls to null.
+- **"Couldn't locate" on markdown-link and HTML-tag spans.** The stale-capture guard required strict equality after normalization, which broke any selection whose raw form carried URL letters or attribute values. Now uses a subsequence check — sel's characters must appear in order in rawSpan — which still rejects the mid-word substring-bypass class while accepting real markdown content.
+- **Rewrite output flashing then disappearing.** Single-capture `doCapture` wasn't idempotent — any stray `selectionchange` producing the same Capture cleared `outputEl` and wiped the just-rendered result. Now short-circuits identical captures, mirroring the multi-capture sig check.
+- **Watch mode not picking up new selections after a rewrite.** The `resultPending` freeze in `onSelectionChange` was too aggressive — reselecting after a result is the user moving on. Now only freezes while a rewrite is actually in flight.
+- **Hide-built-ins checkbox stealing focus mid-toggle.** The sig-cache only skipped renders on unrelated config echoes; profile mutations now pre-sync the sig cache so the incoming echo matches and the re-render is skipped entirely.
+
 ## [1.0.2] — 2026-07-04
 
 Comb-driven correctness + isolation pass — 35 verified findings, 5 batches.
@@ -89,6 +101,7 @@ browser extension, with full feature parity plus a redesigned, accessible panel.
   status regions, container-query responsive layout, and `prefers-reduced-motion` support.
 - Single-source design tokens keyed off the host theme; minified backend and frontend bundles.
 
+[1.0.3]: https://github.com/Beeopo/Lumiverse-Rewrite/releases/tag/v1.0.3
 [1.0.2]: https://github.com/Beeopo/Lumiverse-Rewrite/releases/tag/v1.0.2
 [1.0.1]: https://github.com/Beeopo/Lumiverse-Rewrite/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Beeopo/Lumiverse-Rewrite/releases/tag/v1.0.0
