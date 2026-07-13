@@ -4,6 +4,31 @@ All notable changes to this extension are documented here. The format is based o
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] — 2026-07-12
+
+Formatting-preserving rewrites, and user-configurable generation parameters.
+
+### Added
+- **Generation sampler controls** — a new **Sampling** group in the Options tab exposes
+  temperature, top-P, top-K, max tokens, and frequency/presence penalties. Any field left blank
+  inherits from the selected connection's preset; the temperature/top-P defaults (0.7 / 0.9)
+  reproduce the previously hard-coded values, so existing users see no change until they touch
+  them. A **"Use these for AI helper calls too"** toggle extends the same values to the Refine /
+  AI-generate-style / per-chat-voice calls (off by default — those keep their task-tuned
+  temperatures otherwise). All values persist and round-trip through export/import.
+
+### Fixed
+- **Rewrites stripped `<font>` tags and markdown.** The model was fed the *rendered*
+  (formatting-free) selection and told to emit no markdown, and its plain output then overwrote
+  the raw span that held the markup — so whole-message and font-wrapped rewrites lost all
+  formatting. The rewrite now feeds the model the **raw markdown slice** of the selection (located
+  through the same render→raw alignment the splice uses), the prompt instructs preserving HTML
+  tags and markdown exactly (and never inventing a balancing tag/mark for a fragment), and output
+  quote-stripping is skipped when the input was itself quote-wrapped. Inline markup outside the
+  selected span was already safe; this closes the in-span and whole-message cases.
+- **Length target inflated by markup.** The target word count is now measured from the rendered
+  selection, so tags and markdown carried in the raw slice no longer skew it.
+
 ## [1.0.3] — 2026-07-05
 
 Post-1.0.2 polish — fixes surfaced from real-world use.
@@ -101,6 +126,7 @@ browser extension, with full feature parity plus a redesigned, accessible panel.
   status regions, container-query responsive layout, and `prefers-reduced-motion` support.
 - Single-source design tokens keyed off the host theme; minified backend and frontend bundles.
 
+[1.1.0]: https://github.com/Beeopo/Lumiverse-Rewrite/releases/tag/v1.1.0
 [1.0.3]: https://github.com/Beeopo/Lumiverse-Rewrite/releases/tag/v1.0.3
 [1.0.2]: https://github.com/Beeopo/Lumiverse-Rewrite/releases/tag/v1.0.2
 [1.0.1]: https://github.com/Beeopo/Lumiverse-Rewrite/releases/tag/v1.0.1

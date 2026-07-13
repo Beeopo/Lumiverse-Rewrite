@@ -27,6 +27,14 @@ export interface RewriteConfig {
   showDiff: boolean
   // Configurable undo/redo history depth (1..100).
   historyDepth: number
+  // Generation sampler params for the rewrite call (null = inherit from the connection preset).
+  temperature: number | null
+  topP: number | null
+  topK: number | null
+  maxTokens: number | null
+  frequencyPenalty: number | null
+  presencePenalty: number | null
+  applyParamsToHelpers: boolean
 }
 
 export const DEFAULT_CONFIG: RewriteConfig = {
@@ -50,14 +58,35 @@ export const DEFAULT_CONFIG: RewriteConfig = {
   costCollapsed: false,
   showDiff: false,
   historyDepth: 30,
+  temperature: 0.7,
+  topP: 0.9,
+  topK: null,
+  maxTokens: null,
+  frequencyPenalty: null,
+  presencePenalty: null,
+  applyParamsToHelpers: false,
+}
+
+// Converts config sampler fields into the host's snake_case `parameters` object.
+// Keys are omitted (not set to null) when the value is null, so the host merges
+// them field-by-field over the connection preset instead of clobbering it.
+export function buildParams(cfg: RewriteConfig): Record<string, number> {
+  const p: Record<string, number> = {}
+  if (cfg.temperature != null) p.temperature = cfg.temperature
+  if (cfg.topP != null) p.top_p = cfg.topP
+  if (cfg.topK != null) p.top_k = cfg.topK
+  if (cfg.maxTokens != null) p.max_tokens = cfg.maxTokens
+  if (cfg.frequencyPenalty != null) p.frequency_penalty = cfg.frequencyPenalty
+  if (cfg.presencePenalty != null) p.presence_penalty = cfg.presencePenalty
+  return p
 }
 
 // Frontend → backend
 export type FrontendMsg =
   | { type: "get_config" }
   | { type: "update_config"; config: Partial<RewriteConfig> }
-  | { type: "rewrite"; profileId: string; customPrompt?: string; text: string; concise: boolean; connectionId: string; lengthPct: number; chatId?: string; messageId?: string; characterId?: string }
-  | { type: "rewrite_multi"; segments: { messageId: string; text: string }[]; profileId: string; customPrompt?: string; concise: boolean; connectionId: string; lengthPct: number; chatId: string; characterId?: string }
+  | { type: "rewrite"; profileId: string; customPrompt?: string; text: string; concise: boolean; connectionId: string; lengthPct: number; chatId?: string; messageId?: string; characterId?: string; R?: string; rs?: number; re?: number }
+  | { type: "rewrite_multi"; segments: { messageId: string; text: string; R: string; rs: number; re: number }[]; profileId: string; customPrompt?: string; concise: boolean; connectionId: string; lengthPct: number; chatId: string; characterId?: string }
   | { type: "apply"; chatId: string; messageId: string; R: string; rs: number; re: number; output: string }
   | { type: "apply_multi"; chatId: string; items: { messageId: string; R: string; rs: number; re: number; output: string }[] }
   | { type: "undo" }

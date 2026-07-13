@@ -12,3 +12,10 @@ export function stripWrappingQuotes(s: string): string {
   }
   return t
 }
+
+// True only when the string was actually wrapped in a matched quote pair. Compares to the
+// TRIMMED value so leading/trailing whitespace (which stripWrappingQuotes also removes)
+// doesn't masquerade as a quote wrap.
+export function wasQuoteWrapped(s: string): boolean {
+  return stripWrappingQuotes(s) !== s.trim()
+}

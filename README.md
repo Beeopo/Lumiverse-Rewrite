@@ -21,6 +21,9 @@ one model and rewrite prose with another (e.g. a fast local model for quick edit
 - **Watch mode** auto-captures whatever you highlight in a message; `Alt+R` captures on demand.
 - Corruption-safe in-place splice (render→raw LCS alignment with an authoritative guard) so the
   rewrite lands exactly where you selected and nowhere else.
+- **Formatting-preserving** — `<font>` colours and markdown (`*italics*`, quotes, links) inside
+  the selection survive the rewrite; the model edits the raw markup in place instead of flattening
+  it to plain text.
 - **Multi-message** rewrite: select across several bubbles and rewrite each in one pass.
 - Word-level **diff preview**, live word-count delta, and editable output before applying.
 - Multi-level **undo/redo** with a configurable history depth; optional auto-apply.
@@ -34,6 +37,9 @@ memory/cortex, and world-book/lore.
 - **Live token-cost estimation** with a per-source breakdown before you spend a request.
 - Length control expressed as a target word-count range; CJK-aware word counting.
 - Per-rewrite **connection picker** — rewrite with a different model than the active chat.
+- **Generation parameters** — set temperature, top-P, top-K, max tokens, and frequency/presence
+  penalties per rewrite from the Options tab (leave any blank to inherit from the connection
+  preset), optionally applied to the AI-authoring calls too.
 - Concise-prompt mode, automatic quote-stripping, cancel in-flight generations.
 - Settings export/import, reset to defaults, and a debug-log export.
 

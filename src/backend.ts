@@ -1,9 +1,9 @@
 declare const spindle: import("lumiverse-spindle-types").SpindleAPI
 
 import { sysPrompt, buildUserPrompt, findProfile, type Profile } from "./profiles"
-import { spliceRewrite } from "./align"
-import { DEFAULT_CONFIG, type RewriteConfig, type FrontendMsg, type DebugEntry } from "./types"
-import { stripWrappingQuotes } from "./quotes"
+import { spliceRewrite, resolveRawInput } from "./align"
+import { DEFAULT_CONFIG, type RewriteConfig, type FrontendMsg, type DebugEntry, buildParams } from "./types"
+import { stripWrappingQuotes, wasQuoteWrapped } from "./quotes"
 
 const CONFIG_FILE = "config.json"
 const LLM_TIMEOUT_MS = 120_000
@@ -141,6 +141,9 @@ async function assembleContextBlocks(
   cfg: RewriteConfig,
   anchor: { chatId?: string; messageId?: string; characterId?: string },
   userId: string,
+  // Optional pre-fetched chat messages — when the caller already has them, reuse instead of
+  // re-fetching (the `rewrite` handler shares one fetch with raw-slice resolution).
+  prefetchedMsgs?: Array<{ id: string; role: string; content: string }>,
 ): Promise<{ label: string; text: string }[]> {
   const blocks: { label: string; text: string }[] = []
   const { chatId, messageId, characterId } = anchor
@@ -163,7 +166,7 @@ async function assembleContextBlocks(
   let targetRole: string | null = null
   if (chatId && messageId && (cfg.usePrevMessages || cfg.speakerAware || cfg.useUserPersona)) {
     try {
-      const msgs = (await spindle.chat.getMessages(chatId)) as Array<{ id: string; role: string; content: string }>
+      const msgs = prefetchedMsgs ?? ((await spindle.chat.getMessages(chatId)) as Array<{ id: string; role: string; content: string }>)
       const idx = msgs.findIndex((m) => m.id === messageId)
       if (idx >= 0) {
         targetRole = (msgs[idx].role || "").toLowerCase()
@@ -242,8 +245,9 @@ async function assembleContext(
   cfg: RewriteConfig,
   anchor: { chatId?: string; messageId?: string; characterId?: string },
   userId: string,
+  prefetchedMsgs?: Array<{ id: string; role: string; content: string }>,
 ): Promise<string> {
-  return (await assembleContextBlocks(cfg, anchor, userId)).map((b) => b.text).join("\n\n")
+  return (await assembleContextBlocks(cfg, anchor, userId, prefetchedMsgs)).map((b) => b.text).join("\n\n")
 }
 
 spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
@@ -332,16 +336,38 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
         const profile = resolveProfile(cfg, msg.profileId, msg.customPrompt)
         _debugProfile = profile.id
 
+        // Fetch the chat's messages ONCE — shared by context assembly and raw-slice
+        // resolution. A fetch failure degrades gracefully: assembleContext falls back to
+        // its own (also guarded) fetch, and the raw-slice step falls back to rendered text.
+        let chatMsgs: Array<{ id: string; role: string; content: string }> | undefined
+        if (msg.chatId) {
+          try {
+            chatMsgs = (await spindle.chat.getMessages(msg.chatId)) as Array<{ id: string; role: string; content: string }>
+          } catch (e: any) {
+            spindle.log.warn(`chat messages fetch skipped: ${e?.message}`)
+          }
+        }
+
         const context = await assembleContext(
           cfg,
           { chatId: msg.chatId, messageId: msg.messageId, characterId: msg.characterId },
           userId,
+          chatMsgs,
         )
         spindle.log.info(`rewrite: profile=${profile.id} context=${context.length}c`)
 
+        // Feed the model the raw markdown slice (preserves formatting) when we can locate it;
+        // otherwise degrade gracefully to the rendered text — never turn a working rewrite
+        // into an error.
+        let modelInput = msg.text
+        if (msg.messageId && chatMsgs) {
+          const target = chatMsgs.find((m) => m.id === msg.messageId)
+          if (target) modelInput = resolveRawInput(target.content, msg.R, msg.rs, msg.re, msg.text) ?? msg.text
+        }
+
         const messages = [
           { role: "system" as const, content: sysPrompt(msg.concise) },
-          { role: "user" as const, content: buildUserPrompt(profile, msg.text, msg.lengthPct, context) },
+          { role: "user" as const, content: buildUserPrompt(profile, modelInput, msg.lengthPct, context, msg.text) },
         ]
         let promptTokens = 0
         try {
@@ -361,7 +387,7 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
             userId, // required for operator-scoped extensions (the requesting user)
             connection_id: msg.connectionId,
             messages,
-            parameters: { temperature: 0.7, top_p: 0.9 },
+            parameters: buildParams(cfg),
             reasoning: { source: "off" },
             signal: AbortSignal.any([ac.signal, AbortSignal.timeout(LLM_TIMEOUT_MS)]),
           })
@@ -369,7 +395,10 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
           delAbort(userId, ac)
         }
         const content = (result as Record<string, unknown>)?.content
-        const text = stripWrappingQuotes(typeof content === "string" ? content.trim() : "")
+        const rawOut = typeof content === "string" ? content.trim() : ""
+        // When the input was itself quote-wrapped, the model legitimately keeps those quotes —
+        // don't strip them off the output.
+        const text = wasQuoteWrapped(modelInput) ? rawOut : stripWrappingQuotes(rawOut)
         if (!text) {
           spindle.sendToFrontend({ type: "rewrite_error", error: "Model returned an empty rewrite." })
           break
@@ -402,6 +431,16 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
         // Resolve the profile ONCE — same resolution as the single `rewrite` case.
         const profile = resolveProfile(cfg, msg.profileId, msg.customPrompt)
 
+        // Fetch the chat's messages ONCE — every segment resolves its raw slice against
+        // this same snapshot. A fetch failure degrades gracefully: each segment then
+        // falls back to its own rendered text.
+        let chatMsgs: Array<{ id: string; content: string }> = []
+        try {
+          chatMsgs = (await spindle.chat.getMessages(msg.chatId)) as Array<{ id: string; content: string }>
+        } catch (e: any) {
+          spindle.log.warn(`raw-slice message fetch skipped: ${e?.message}`)
+        }
+
         const sys = sysPrompt(msg.concise)
         const out: { messageId: string; output: string }[] = []
         // ponytail: re-assembles chat-level context per segment; fine for typical 2-3 message selections
@@ -413,9 +452,11 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
             { chatId: msg.chatId, messageId: seg.messageId, characterId: msg.characterId },
             userId,
           )
+          const target = chatMsgs.find((m) => m.id === seg.messageId)
+          const segInput = target ? (resolveRawInput(target.content, seg.R, seg.rs, seg.re, seg.text) ?? seg.text) : seg.text
           const messages = [
             { role: "system" as const, content: sys },
-            { role: "user" as const, content: buildUserPrompt(profile, seg.text, msg.lengthPct, context) },
+            { role: "user" as const, content: buildUserPrompt(profile, segInput, msg.lengthPct, context, seg.text) },
           ]
           try {
             totalPromptTokens += (await spindle.tokens.countMessages(messages, { userId })).total_tokens
@@ -431,7 +472,7 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
               userId, // required for operator-scoped extensions (the requesting user)
               connection_id: msg.connectionId,
               messages,
-              parameters: { temperature: 0.7, top_p: 0.9 },
+              parameters: buildParams(cfg),
               reasoning: { source: "off" },
               signal: AbortSignal.any([ac.signal, AbortSignal.timeout(LLM_TIMEOUT_MS)]),
             })
@@ -446,7 +487,8 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
             delAbort(userId, ac)
           }
           const content = (result as Record<string, unknown>)?.content
-          const text = stripWrappingQuotes(typeof content === "string" ? content.trim() : "")
+          const rawOut = typeof content === "string" ? content.trim() : ""
+          const text = wasQuoteWrapped(segInput) ? rawOut : stripWrappingQuotes(rawOut)
           // Skip empty model outputs — apply_multi filters by output presence, so an empty
           // segment simply won't be applied (never corrupts).
           if (text) out.push({ messageId: seg.messageId, output: text })
@@ -673,6 +715,7 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
           spindle.sendToFrontend({ type: "refine_error", error: "Select a connection first." })
           break
         }
+        const cfg = await loadConfig()
         const SYS = "You turn a user's rough note into ONE clear, imperative, verb-first instruction for rewriting a passage of prose. Output ONLY the instruction, no preamble or quotes."
         const c = withUserCancel(userId)
         try {
@@ -681,7 +724,7 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
             userId,
             connection_id: msg.connectionId,
             messages: [{ role: "system", content: SYS }, { role: "user", content: msg.text }],
-            parameters: { temperature: 0.4 },
+            parameters: cfg.applyParamsToHelpers ? buildParams(cfg) : { temperature: 0.4 },
             reasoning: { source: "off" },
             signal: c.signal,
           })
@@ -707,6 +750,7 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
           spindle.sendToFrontend({ type: "architect_error", error: "Select a connection first." })
           break
         }
+        const cfg = await loadConfig()
         const SYS = `From the user's description, produce a rewrite STYLE as strict minified JSON: {"name":"<short name>","prompt":"<one clear imperative rewrite instruction>"}. Output ONLY the JSON object.`
         const c = withUserCancel(userId)
         try {
@@ -715,7 +759,7 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
             userId,
             connection_id: msg.connectionId,
             messages: [{ role: "system", content: SYS }, { role: "user", content: msg.description }],
-            parameters: { temperature: 0.4 },
+            parameters: cfg.applyParamsToHelpers ? buildParams(cfg) : { temperature: 0.4 },
             reasoning: { source: "off" },
             signal: c.signal,
           })
@@ -790,6 +834,7 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
         }
         const SYS = "From a character's profile, write a single imperative rewrite instruction that rewrites a passage into THAT character's narration/voice (diction, register, mannerisms). Output ONLY the instruction."
         const USER = `Name: ${c.name}\nPersonality: ${(c.personality || "").slice(0, 500)}\nDescription: ${(c.description || "").slice(0, 500)}`
+        const cfg = await loadConfig()
         const cancel = withUserCancel(userId)
         try {
           const result = await spindle.generate.quiet({
@@ -797,7 +842,7 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
             userId,
             connection_id: msg.connectionId,
             messages: [{ role: "system", content: SYS }, { role: "user", content: USER }],
-            parameters: { temperature: 0.5 },
+            parameters: cfg.applyParamsToHelpers ? buildParams(cfg) : { temperature: 0.5 },
             reasoning: { source: "off" },
             signal: cancel.signal,
           })
@@ -807,7 +852,6 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
             spindle.sendToFrontend({ type: "autoprofile_error", error: "Model returned an empty response." })
             break
           }
-          const cfg = await loadConfig()
           const name = `${c.name}'s Voice`
           cfg.autoProfiles[msg.chatId] = { name, prompt: text }
           configCache = cfg

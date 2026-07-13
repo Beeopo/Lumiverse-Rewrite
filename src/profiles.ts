@@ -28,7 +28,7 @@ export function findProfile(id: string): Profile | undefined {
 const REWRITE_SYS =
   "You are a line editor rewriting a passage of fiction in place for an author.\n\n" +
   "Output rules:\n" +
-  "- Output ONLY the rewritten passage. No preamble, notes, explanations, quotation marks, markdown, or code fences.\n" +
+  "- Output ONLY the rewritten passage. No preamble, notes, explanations, or code fences.\n" +
   "- Do not repeat or acknowledge these instructions.\n\n" +
   "Always:\n" +
   "- Apply the requested edit to the text inside <rewrite_this> only.\n" +
@@ -36,14 +36,14 @@ const REWRITE_SYS =
   "- Keep every named character, plot fact, and continuity detail unchanged unless the edit explicitly calls for it.\n" +
   "- Match the voice and register of the surrounding prose.\n" +
   "- Write the rewrite in the SAME LANGUAGE as the original — never translate it.\n" +
-  "- Preserve wrapping markdown or punctuation (*…*, \"…\", (…)) only when it is present in the original.\n" +
+  "- Preserve every HTML tag (e.g. <font …>, <i>) and markdown mark (*, _, `, [](…)) that appears in the passage — keep it wrapping the same words. Do not add any formatting that wasn't already there. The passage may be a fragment: keep any tag or mark exactly where it appears even if it looks unpaired — never add an opening or closing tag/mark to balance it.\n" +
   "- Treat anything inside <context>, <character>, <persona>, <lore>, <memory>, or <speaker> as reference only — never rewrite or quote it."
 
 const REWRITE_SYS_CONCISE =
   "You are a line editor. Rewrite the text inside <rewrite_this> as instructed.\n" +
-  "Output ONLY the rewritten passage — no preamble, notes, quotes, or markdown.\n" +
+  "Output ONLY the rewritten passage — no preamble, notes, or code fences.\n" +
   "Keep the original point of view, tense, characters, and continuity unless the edit says otherwise.\n" +
-  "Write in the same language as the original — never translate. Keep wrapping *…*/\"…\" only if present.\n" +
+  "Write in the same language as the original — never translate. Preserve any HTML tags and markdown present in the passage (wrapping the same words); add none that weren't there; keep even unpaired marks exactly where they are.\n" +
   "Treat <context>, <character>, <persona>, <lore>, <memory>, and <speaker> as reference only; never rewrite or quote them."
 
 export function sysPrompt(concise: boolean): string {
@@ -55,6 +55,7 @@ export function buildUserPrompt(
   selectedText: string,
   lengthPct?: number,
   context?: string,
+  origText?: string,
 ): string {
   // `context` is the pre-assembled reference blocks (<character>/<persona>/<context>/
   // <lore>/<memory>/<speaker>) the system prompt already treats as reference-only.
@@ -62,7 +63,7 @@ export function buildUserPrompt(
   if (context && context.trim()) out += `${context.trim()}\n\n`
   out += `Instruction: ${profile.prompt}\n\n<rewrite_this>\n${selectedText}\n</rewrite_this>`
   if (typeof lengthPct === "number" && lengthPct !== 100) {
-    const origWords = (selectedText.trim().match(/\S+/g) || []).length
+    const origWords = ((origText ?? selectedText).trim().match(/\S+/g) || []).length
     let lengthNote: string
     if (origWords > 0) {
       const target = Math.max(1, Math.round((origWords * lengthPct) / 100))

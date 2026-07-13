@@ -212,6 +212,34 @@ export function spliceRewrite(
   return rawA.slice(0, span.as) + output + rawA.slice(span.ae)
 }
 
+// Returns the raw markdown slice to feed the model for the rendered selection [rs,re),
+// or null → the caller should fall back to the rendered `sentText`. Guards:
+//  - no capture geometry (manual run) → null
+//  - selection can't be located in raw → null
+//  - mapped raw span is only whitespace → null
+//  - user edited the input box (sent text no longer matches the captured selection) → null
+//  - stale R (captured rendered text no longer matches live raw content) → null
+export function resolveRawInput(
+  rawA: string,
+  R: string | undefined,
+  rs: number | undefined,
+  re: number | undefined,
+  sentText: string,
+): string | null {
+  if (!R || rs == null || re == null) return null
+  const span = mapRenderedSpanToRaw(R, rawA, rs, re)
+  if (!span) return null
+  const slice = rawA.slice(span.as, span.ae)
+  if (!slice.trim()) return null // mapped raw span is only whitespace → nothing to rewrite
+  const selNorm = normForCompare(R.slice(rs, re))
+  // (a) unedited-input gate: the user didn't reword the input box.
+  if (normForCompare(sentText) !== selNorm) return null
+  // (b) stale-R guard (mirrors spliceRewrite's guard): the rendered selection must be a
+  // subsequence of the located raw span, else R is stale vs the live raw content.
+  if (!isSubsequenceOf(selNorm, normForCompare(slice))) return null
+  return slice
+}
+
 function isSubsequenceOf(needle: string, haystack: string): boolean {
   if (needle.length > haystack.length) return false
   let i = 0

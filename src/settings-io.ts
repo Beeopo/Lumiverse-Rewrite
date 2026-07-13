@@ -50,6 +50,7 @@ export function sanitizeImport(raw: unknown): Partial<RewriteConfig> {
     "concise",
     "autoApply",
     "showDiff",
+    "applyParamsToHelpers",
   ] as const
   for (const key of boolKeys) {
     if (typeof obj[key] === "boolean") {
@@ -70,6 +71,27 @@ export function sanitizeImport(raw: unknown): Partial<RewriteConfig> {
   // historyDepth: integer clamped 1..100
   if (typeof obj.historyDepth === "number" && Number.isFinite(obj.historyDepth)) {
     out.historyDepth = Math.max(1, Math.min(100, Math.round(obj.historyDepth)))
+  }
+
+  // Sampler params: number clamped to range (int ones rounded), null kept as explicit
+  // "inherit", anything else dropped.
+  const samplerRanges = {
+    temperature: [0, 2, false],
+    topP: [0, 1, false],
+    topK: [0, 1000, true],
+    maxTokens: [1, 1000000, true], // permissive sanity ceiling, not a model limit
+    frequencyPenalty: [-2, 2, false],
+    presencePenalty: [-2, 2, false],
+  } as const
+  for (const key of Object.keys(samplerRanges) as (keyof typeof samplerRanges)[]) {
+    const [min, max, isInt] = samplerRanges[key]
+    const val = obj[key]
+    if (val === null) {
+      ;(out as Record<string, unknown>)[key] = null
+    } else if (typeof val === "number" && Number.isFinite(val)) {
+      const clamped = Math.max(min, Math.min(max, val))
+      ;(out as Record<string, unknown>)[key] = isInt ? Math.round(clamped) : clamped
+    }
   }
 
   // Explicitly NOT including: connectionId (machine-specific), watch, version, or anything else

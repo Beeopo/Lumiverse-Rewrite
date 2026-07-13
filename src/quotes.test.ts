@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test"
-import { stripWrappingQuotes } from "./quotes"
+import { stripWrappingQuotes, wasQuoteWrapped } from "./quotes"
 
 test("strips straight double quotes wrapping entire output", () => {
   expect(stripWrappingQuotes('"hello"')).toBe("hello")
@@ -37,4 +37,32 @@ test("trims surrounding whitespace before checking", () => {
 
 test("empty string stays empty", () => {
   expect(stripWrappingQuotes("")).toBe("")
+})
+
+test("wasQuoteWrapped: true for a quote-wrapped string", () => {
+  expect(wasQuoteWrapped('"hello"')).toBe(true)
+})
+
+test("wasQuoteWrapped: true for a quote-wrapped string with surrounding whitespace", () => {
+  expect(wasQuoteWrapped('  "hello"  ')).toBe(true)
+})
+
+test("wasQuoteWrapped: false for whitespace-only wrapping (the bug case)", () => {
+  expect(wasQuoteWrapped("Hello world.\n")).toBe(false)
+})
+
+test("wasQuoteWrapped: false for plain text", () => {
+  expect(wasQuoteWrapped("plain")).toBe(false)
+})
+
+test("wasQuoteWrapped: false for empty string", () => {
+  expect(wasQuoteWrapped("")).toBe(false)
+})
+
+test("wasQuoteWrapped: true for single-quote-wrapped string", () => {
+  expect(wasQuoteWrapped("'hello'")).toBe(true)
+})
+
+test("wasQuoteWrapped: false for dialogue with internal quotes", () => {
+  expect(wasQuoteWrapped('"Hi," he said "bye"')).toBe(false)
 })

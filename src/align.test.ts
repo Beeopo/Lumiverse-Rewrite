@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test"
-import { mapRenderedSpanToRaw, spliceRewrite } from "./align"
+import { mapRenderedSpanToRaw, spliceRewrite, resolveRawInput } from "./align"
 
 test("maps a span when rendered === raw (no transforms)", () => {
   const s = "The quick brown fox jumps."
@@ -113,4 +113,66 @@ test("spliceRewrite rejects a stale selection that maps to a coincidental anchor
   // sanity: the same selection against MATCHING content still splices
   const ok = spliceRewrite("alpha beta gamma delta", "alpha beta gamma delta", 11, 16, "X")
   expect(ok).toBe("alpha beta X delta")
+})
+
+test("resolveRawInput returns the raw slice (including markup) for an unedited full-message selection", () => {
+  const rawA = '<font color="#f00">*hello* world</font>'
+  const R = "hello world"
+  const out = resolveRawInput(rawA, R, 0, R.length, "hello world")
+  expect(out).not.toBeNull()
+  expect(out).toContain("<font")
+  expect(out).toContain("*hello*")
+})
+
+test("resolveRawInput returns null when the user edited the input box before sending", () => {
+  const rawA = '<font color="#f00">*hello* world</font>'
+  const R = "hello world"
+  const out = resolveRawInput(rawA, R, 0, R.length, "goodbye world")
+  expect(out).toBeNull()
+})
+
+test("resolveRawInput returns null when there is no capture geometry (manual run)", () => {
+  const rawA = '<font color="#f00">*hello* world</font>'
+  expect(resolveRawInput(rawA, undefined, undefined, undefined, "hello")).toBeNull()
+})
+
+test("resolveRawInput returns null when the selection can't be located in raw (empty raw → !span)", () => {
+  // Genuinely exercises the `if (!span) return null` branch: mapRenderedSpanToRaw
+  // returns null for empty rawA, so we bail before the input-gate/subsequence checks.
+  const rawA = ""
+  const R = "hello"
+  const out = resolveRawInput(rawA, R, 0, R.length, R)
+  expect(out).toBeNull()
+})
+
+test("resolveRawInput returns null when the mapped raw span is whitespace-only (!slice.trim)", () => {
+  // "a b" maps identically; selecting the middle space maps to a " " raw slice, which
+  // fails the !slice.trim() guard (step 3) — a whitespace-only slice has nothing to rewrite.
+  const rawA = "a b"
+  const out = resolveRawInput(rawA, "a b", 1, 2, " ")
+  expect(out).toBeNull()
+})
+
+test("resolveRawInput returns the inline-markup slice for a PARTIAL selection (real alignExact path)", () => {
+  // Not a full-message selection (rs=3, re=16 within a 20-char rendered string), so this
+  // exercises alignExact rather than the rs===0 && re===n shortcut. Selecting "said hello to"
+  // pulls the flanking emphasis into the slice → the model sees the *hello* markup.
+  const raw = "he said *hello* to her"
+  const R = "he said hello to her"
+  const sel = "said hello to"
+  const rs = R.indexOf(sel), re = rs + sel.length
+  const out = resolveRawInput(raw, R, rs, re, sel)
+  expect(out).toBe("said *hello* to")
+})
+
+test("resolveRawInput returns null when R is stale and maps onto a coincidental anchor (subsequence guard)", () => {
+  // Same fixture as the spliceRewrite coincidental-anchor regression: rs/re locate a raw
+  // span ("gamma") whose content doesn't match the stale selection text, so the
+  // subsequence guard must reject it even though mapRenderedSpanToRaw found a span.
+  const liveRaw = "alpha beta gamma delta epsilon zeta"
+  const staleR = "alpha beta WRONGWORD delta epsilon zeta"
+  const rs = staleR.indexOf("WRONGWORD")
+  const re = rs + "WRONGWORD".length
+  const out = resolveRawInput(liveRaw, staleR, rs, re, staleR.slice(rs, re))
+  expect(out).toBeNull()
 })

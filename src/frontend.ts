@@ -475,6 +475,16 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         <div class="rw-row"><span class="rw-label">Undo depth</span><input type="number" id="rw-histdepth" min="1" max="100" value="30" class="rw-input rw-num" title="Undo/redo history depth (1–100)" aria-label="Undo history depth" /></div>
       </div>
       <div class="rw-sec">
+        <div class="rw-sec-hd"><span>Sampling</span></div>
+        <div class="rw-row"><span class="rw-label">Temperature</span><input type="number" id="rw-temp" min="0" max="2" step="0.05" placeholder="inherit" class="rw-input rw-num" title="Sampling temperature (0–2)" aria-label="Temperature" /></div>
+        <div class="rw-row"><span class="rw-label">Top P</span><input type="number" id="rw-topp" min="0" max="1" step="0.05" placeholder="inherit" class="rw-input rw-num" title="Top P (0–1)" aria-label="Top P" /></div>
+        <div class="rw-row"><span class="rw-label">Top K</span><input type="number" id="rw-topk" min="0" step="1" placeholder="inherit" class="rw-input rw-num" title="Top K" aria-label="Top K" /></div>
+        <div class="rw-row"><span class="rw-label">Max tokens</span><input type="number" id="rw-maxtok" min="1" step="1" placeholder="inherit" class="rw-input rw-num" title="Max output tokens" aria-label="Max tokens" /></div>
+        <div class="rw-row"><span class="rw-label">Frequency penalty</span><input type="number" id="rw-freqpen" min="-2" max="2" step="0.1" placeholder="inherit" class="rw-input rw-num" title="Frequency penalty (-2–2)" aria-label="Frequency penalty" /></div>
+        <div class="rw-row"><span class="rw-label">Presence penalty</span><input type="number" id="rw-prespen" min="-2" max="2" step="0.1" placeholder="inherit" class="rw-input rw-num" title="Presence penalty (-2–2)" aria-label="Presence penalty" /></div>
+        <label class="rw-tog"><input type="checkbox" id="rw-apply-helpers" /><span class="rw-tog-sl"></span>Use these for AI helper calls too</label>
+      </div>
+      <div class="rw-sec">
         <div class="rw-sec-hd"><span>Data</span></div>
         <div class="rw-btns"><button class="rw-btn" id="rw-export">Export settings</button><button class="rw-btn" id="rw-import">Import settings</button><button class="rw-btn" id="rw-export-debug">Export debug</button><button class="rw-btn" id="rw-reset">Reset to defaults</button></div>
       </div>
@@ -526,6 +536,13 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   const newProfAdd = $("rw-newprof-add") as HTMLButtonElement
   const hideBuiltinsEl = $("rw-hide-builtins")
   const histDepthEl = $("rw-histdepth") as HTMLInputElement
+  const tempEl = $("rw-temp") as HTMLInputElement
+  const topPEl = $("rw-topp") as HTMLInputElement
+  const topKEl = $("rw-topk") as HTMLInputElement
+  const maxTokEl = $("rw-maxtok") as HTMLInputElement
+  const freqPenEl = $("rw-freqpen") as HTMLInputElement
+  const presPenEl = $("rw-prespen") as HTMLInputElement
+  const applyHelpersEl = $("rw-apply-helpers") as HTMLInputElement
   const exportBtn = $("rw-export") as HTMLButtonElement
   const importBtn = $("rw-import") as HTMLButtonElement
   const refineBtn = $("rw-refine") as HTMLButtonElement
@@ -735,12 +752,14 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (!lastConfig) { setStatus(msgEl, "Settings not loaded yet.", true); return }
     const { customProfiles, customPrompts, hiddenProfiles, usePrevMessages, prevMessageCount,
       speakerAware, useCharCard, useUserPersona, useMemory, useLorebook,
-      lengthPct, concise, autoApply, historyDepth, showDiff } = lastConfig
+      lengthPct, concise, autoApply, historyDepth, showDiff,
+      temperature, topP, topK, maxTokens, frequencyPenalty, presencePenalty, applyParamsToHelpers } = lastConfig
     // historyDepth + showDiff are both accepted by sanitizeImport — include them so an
     // export→import round-trip preserves a customized value instead of silently reverting.
     const obj = { version: 1, customProfiles, customPrompts, hiddenProfiles, usePrevMessages,
       prevMessageCount, speakerAware, useCharCard, useUserPersona, useMemory, useLorebook,
-      lengthPct, concise, autoApply, historyDepth, showDiff }
+      lengthPct, concise, autoApply, historyDepth, showDiff,
+      temperature, topP, topK, maxTokens, frequencyPenalty, presencePenalty, applyParamsToHelpers }
     const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" })
     const a = document.createElement("a")
     a.href = URL.createObjectURL(blob)
@@ -996,6 +1015,25 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     ctx.sendToBackend({ type: "update_config", config: { historyDepth: v } })
   })
 
+  // Sampling numeric inputs: empty = inherit from the connection preset (null), else clamp
+  // to range (rounding integer params) and echo the sanitized value back into the field.
+  const readNum = (el: HTMLInputElement, lo: number, hi: number, int: boolean): number | null => {
+    const raw = el.value.trim()
+    if (raw === "") return null
+    let v = parseFloat(raw)
+    if (!Number.isFinite(v)) { el.value = ""; return null }
+    v = Math.max(lo, Math.min(hi, v)); if (int) v = Math.round(v)
+    el.value = String(v)
+    return v
+  }
+  tempEl.addEventListener("change", () => ctx.sendToBackend({ type: "update_config", config: { temperature: readNum(tempEl, 0, 2, false) } }))
+  topPEl.addEventListener("change", () => ctx.sendToBackend({ type: "update_config", config: { topP: readNum(topPEl, 0, 1, false) } }))
+  topKEl.addEventListener("change", () => ctx.sendToBackend({ type: "update_config", config: { topK: readNum(topKEl, 0, 1000, true) } }))
+  maxTokEl.addEventListener("change", () => ctx.sendToBackend({ type: "update_config", config: { maxTokens: readNum(maxTokEl, 1, 1000000, true) } }))
+  freqPenEl.addEventListener("change", () => ctx.sendToBackend({ type: "update_config", config: { frequencyPenalty: readNum(freqPenEl, -2, 2, false) } }))
+  presPenEl.addEventListener("change", () => ctx.sendToBackend({ type: "update_config", config: { presencePenalty: readNum(presPenEl, -2, 2, false) } }))
+  applyHelpersEl.addEventListener("change", () => ctx.sendToBackend({ type: "update_config", config: { applyParamsToHelpers: applyHelpersEl.checked } }))
+
   exportDebugBtn.addEventListener("click", () => {
     ctx.sendToBackend({ type: "get_debug" })
   })
@@ -1053,7 +1091,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (multiCapture) {
       ctx.sendToBackend({
         type: "rewrite_multi",
-        segments: multiCapture.segments.map((s) => ({ messageId: s.messageId, text: s.text })),
+        segments: multiCapture.segments.map((s) => ({ messageId: s.messageId, text: s.text, R: s.R, rs: s.rs, re: s.re })),
         profileId: styleEl.value,
         customPrompt: isCustom ? customText : undefined,
         concise: conciseEl.checked,
@@ -1074,6 +1112,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         chatId: capture?.chatId ?? active.chatId ?? undefined,
         messageId: capture?.messageId,
         characterId: active.characterId ?? undefined,
+        R: capture?.R, rs: capture?.rs, re: capture?.re,
       })
     }
     if (isCustom) saveCustom(customText)
@@ -1180,6 +1219,13 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         diffToggle.checked = cfg.showDiff
         updateDiffView()
         histDepthEl.value = String(cfg.historyDepth)
+        tempEl.value = cfg.temperature == null ? "" : String(cfg.temperature)
+        topPEl.value = cfg.topP == null ? "" : String(cfg.topP)
+        topKEl.value = cfg.topK == null ? "" : String(cfg.topK)
+        maxTokEl.value = cfg.maxTokens == null ? "" : String(cfg.maxTokens)
+        freqPenEl.value = cfg.frequencyPenalty == null ? "" : String(cfg.frequencyPenalty)
+        presPenEl.value = cfg.presencePenalty == null ? "" : String(cfg.presencePenalty)
+        applyHelpersEl.checked = cfg.applyParamsToHelpers
         // Surface a persistence-failure signal from update_config / reset_config.
         if (m.persisted === false) setStatus(msgEl, "Settings could not be saved to disk — changes may not survive a restart.", true)
         // Refresh the estimate once after the initial sync if there's already input.

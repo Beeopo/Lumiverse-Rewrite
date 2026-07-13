@@ -141,3 +141,58 @@ test("customPrompts and hiddenProfiles: empty/whitespace-only strings are droppe
   expect(out.customPrompts).toEqual(["keep this"])
   expect(out.hiddenProfiles).toEqual(["expand"])
 })
+
+test("temperature: 5 clamps to 2", () => {
+  const out = sanitizeImport({ temperature: 5 })
+  expect(out.temperature).toBe(2)
+})
+
+test("topP: -1 clamps to 0", () => {
+  const out = sanitizeImport({ topP: -1 })
+  expect(out.topP).toBe(0)
+})
+
+test("maxTokens: 'abc' is dropped (key absent from output)", () => {
+  const out = sanitizeImport({ maxTokens: "abc" })
+  expect(out).not.toHaveProperty("maxTokens")
+})
+
+test("temperature: null is kept as explicit null (inherit)", () => {
+  const out = sanitizeImport({ temperature: null })
+  expect(out.temperature).toBeNull()
+})
+
+test("applyParamsToHelpers: true survives", () => {
+  const out = sanitizeImport({ applyParamsToHelpers: true })
+  expect(out.applyParamsToHelpers).toBe(true)
+})
+
+test("topK: garbage type (string) is dropped", () => {
+  const out = sanitizeImport({ topK: "40" })
+  expect(out).not.toHaveProperty("topK")
+})
+
+test("topK: 1500.6 clamps to 1000 (clamp then round)", () => {
+  const out = sanitizeImport({ topK: 1500.6 })
+  expect(out.topK).toBe(1000)
+})
+
+test("topK: 40.6 rounds to 41 (no clamp)", () => {
+  const out = sanitizeImport({ topK: 40.6 })
+  expect(out.topK).toBe(41)
+})
+
+test("maxTokens: 0.4 clamps before rounding to 1 (not 0)", () => {
+  const out = sanitizeImport({ maxTokens: 0.4 })
+  expect(out.maxTokens).toBe(1)
+})
+
+test("frequencyPenalty: 5 clamps to 2", () => {
+  const out = sanitizeImport({ frequencyPenalty: 5 })
+  expect(out.frequencyPenalty).toBe(2)
+})
+
+test("presencePenalty: -5 clamps to -2", () => {
+  const out = sanitizeImport({ presencePenalty: -5 })
+  expect(out.presencePenalty).toBe(-2)
+})
