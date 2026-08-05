@@ -4,6 +4,20 @@ All notable changes to this extension are documented here. The format is based o
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] — 2026-08-05
+
+### Added
+- **Configurable request timeout** — `Options → Behaviour → Timeout (s)` sets how long a
+  model call may run before it is aborted (10–600s, default 120s, was hard-coded). The
+  frontend watchdog follows it automatically, and the value is included in settings
+  export/import.
+
+### Fixed
+- **Timeouts no longer masquerade as cancels** — a timed-out generation reported the same
+  "Cancelled." as pressing Cancel, since both surface as an `AbortError`. It now reads
+  "Timed out after Ns — raise Timeout in Options." across rewrite, multi-rewrite, refine,
+  architect, and auto-profile.
+
 ## [1.1.0] — 2026-07-12
 
 Formatting-preserving rewrites, and user-configurable generation parameters.

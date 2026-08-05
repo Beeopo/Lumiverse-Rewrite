@@ -176,8 +176,9 @@ function liveRenderedFor(messageId: string): string | null {
 }
 
 // Frontend watchdog: re-enable Run if the backend never replies (worker torn down /
-// channel dropped). Slightly above the backend LLM_TIMEOUT_MS (120s).
-const RUN_WATCHDOG_MS = 125_000
+// channel dropped). Kept slightly above the backend's configurable timeout; updated
+// whenever a config arrives so the two never fight.
+let RUN_WATCHDOG_MS = 125_000
 
 // ── Word-level diff (ported from the original) ──
 const DIFF_TOKEN_CAP = 500
@@ -473,6 +474,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           <label class="rw-tog"><input type="checkbox" id="rw-debug" /><span class="rw-tog-sl"></span>Debug log</label>
         </div>
         <div class="rw-row"><span class="rw-label">Undo depth</span><input type="number" id="rw-histdepth" min="1" max="100" value="30" class="rw-input rw-num" title="Undo/redo history depth (1–100)" aria-label="Undo history depth" /></div>
+        <div class="rw-row"><span class="rw-label">Timeout (s)</span><input type="number" id="rw-timeout" min="10" max="600" step="5" value="120" class="rw-input rw-num" title="Give up on a model call after this many seconds (10–600)" aria-label="Request timeout in seconds" /></div>
       </div>
       <div class="rw-sec">
         <div class="rw-sec-hd"><span>Sampling</span></div>
@@ -536,6 +538,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   const newProfAdd = $("rw-newprof-add") as HTMLButtonElement
   const hideBuiltinsEl = $("rw-hide-builtins")
   const histDepthEl = $("rw-histdepth") as HTMLInputElement
+  const timeoutEl = $("rw-timeout") as HTMLInputElement
   const tempEl = $("rw-temp") as HTMLInputElement
   const topPEl = $("rw-topp") as HTMLInputElement
   const topKEl = $("rw-topk") as HTMLInputElement
@@ -752,13 +755,13 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (!lastConfig) { setStatus(msgEl, "Settings not loaded yet.", true); return }
     const { customProfiles, customPrompts, hiddenProfiles, usePrevMessages, prevMessageCount,
       speakerAware, useCharCard, useUserPersona, useMemory, useLorebook,
-      lengthPct, concise, autoApply, historyDepth, showDiff,
+      lengthPct, concise, autoApply, historyDepth, timeoutSec, showDiff,
       temperature, topP, topK, maxTokens, frequencyPenalty, presencePenalty, applyParamsToHelpers } = lastConfig
     // historyDepth + showDiff are both accepted by sanitizeImport — include them so an
     // export→import round-trip preserves a customized value instead of silently reverting.
     const obj = { version: 1, customProfiles, customPrompts, hiddenProfiles, usePrevMessages,
       prevMessageCount, speakerAware, useCharCard, useUserPersona, useMemory, useLorebook,
-      lengthPct, concise, autoApply, historyDepth, showDiff,
+      lengthPct, concise, autoApply, historyDepth, timeoutSec, showDiff,
       temperature, topP, topK, maxTokens, frequencyPenalty, presencePenalty, applyParamsToHelpers }
     const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" })
     const a = document.createElement("a")
@@ -1014,6 +1017,13 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     histDepthEl.value = String(v)
     ctx.sendToBackend({ type: "update_config", config: { historyDepth: v } })
   })
+  timeoutEl.addEventListener("change", () => {
+    let v = parseInt(timeoutEl.value, 10)
+    if (!Number.isFinite(v)) v = 120
+    v = Math.max(10, Math.min(600, v))
+    timeoutEl.value = String(v)
+    ctx.sendToBackend({ type: "update_config", config: { timeoutSec: v } })
+  })
 
   // Sampling numeric inputs: empty = inherit from the connection preset (null), else clamp
   // to range (rounding integer params) and echo the sanitized value back into the field.
@@ -1082,11 +1092,15 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (!inputEl.value.trim()) { setStatus(msgEl, "Nothing to rewrite — input is empty.", true); return }
     running = true; runBtn.textContent = "Cancel"; runBtn.setAttribute("aria-busy", "true"); setStatus(msgEl, "Rewriting…")
     if (runTimer) clearTimeout(runTimer)
+    // rewrite_multi runs its segments SEQUENTIALLY, each with its own full backend timeout,
+    // so budget the watchdog per segment — otherwise a multi-segment run trips it while the
+    // backend is still legitimately working, and the real result lands on a reset UI.
+    const segCount = multiCapture ? Math.max(1, multiCapture.segments.length) : 1
     runTimer = setTimeout(() => {
       runTimer = null
       running = false; runBtn.disabled = false; runBtn.textContent = "Run"; runBtn.removeAttribute("aria-busy")
       setStatus(msgEl, "Timed out waiting for a response. Try again.", true)
-    }, RUN_WATCHDOG_MS)
+    }, RUN_WATCHDOG_MS * segCount)
     const active = ctx.getActiveChat()
     if (multiCapture) {
       ctx.sendToBackend({
@@ -1219,6 +1233,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         diffToggle.checked = cfg.showDiff
         updateDiffView()
         histDepthEl.value = String(cfg.historyDepth)
+        timeoutEl.value = String(cfg.timeoutSec)
+        RUN_WATCHDOG_MS = cfg.timeoutSec * 1000 + 5_000
         tempEl.value = cfg.temperature == null ? "" : String(cfg.temperature)
         topPEl.value = cfg.topP == null ? "" : String(cfg.topP)
         topKEl.value = cfg.topK == null ? "" : String(cfg.topK)
@@ -1256,7 +1272,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       // clearing the Watch freeze. Without this, multi-rewrite errors leave outputEl frozen
       // read-only with stale segment content and no way to edit or re-run without a reload.
       case "rewrite_error": endRun(); outputEl.readOnly = false; multiCapture = null; setStatus(msgEl, m.error, true); break
-      case "rewrite_cancelled": endRun(); outputEl.readOnly = false; multiCapture = null; setStatus(msgEl, "Cancelled."); break
+      case "rewrite_cancelled": endRun(); outputEl.readOnly = false; multiCapture = null; setStatus(msgEl, m.reason ?? "Cancelled."); break
       case "apply_done": applyBtn.disabled = false; resultPending = false; undoBtn.disabled = !m.canUndo; redoBtn.disabled = !m.canRedo; setStatus(msgEl, "Applied to message ✓"); break
       case "apply_multi_done": {
         applyBtn.disabled = false

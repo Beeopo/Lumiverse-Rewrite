@@ -27,6 +27,8 @@ export interface RewriteConfig {
   showDiff: boolean
   // Configurable undo/redo history depth (1..100).
   historyDepth: number
+  // Per-LLM-call timeout in seconds (10..600). Slow local models need more than 120s.
+  timeoutSec: number
   // Generation sampler params for the rewrite call (null = inherit from the connection preset).
   temperature: number | null
   topP: number | null
@@ -58,6 +60,7 @@ export const DEFAULT_CONFIG: RewriteConfig = {
   costCollapsed: false,
   showDiff: false,
   historyDepth: 30,
+  timeoutSec: 120,
   temperature: 0.7,
   topP: 0.9,
   topK: null,
@@ -124,7 +127,7 @@ export type BackendMsg =
   | { type: "autoprofile_error"; error: string }
   | { type: "debug"; entries: DebugEntry[] }
   | { type: "token_estimate"; total: number; system: number; selection: number; sources: { label: string; tokens: number }[] }
-  | { type: "rewrite_cancelled" }
+  | { type: "rewrite_cancelled"; reason?: string }
 
 export interface DebugEntry {
   ts: number

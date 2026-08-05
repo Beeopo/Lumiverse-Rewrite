@@ -110,6 +110,13 @@ test("historyDepth: 0 clamps to 1", () => {
   expect(out.historyDepth).toBe(1)
 })
 
+test("timeoutSec: clamps to 10..600 and drops junk", () => {
+  expect(sanitizeImport({ timeoutSec: 5 }).timeoutSec).toBe(10)
+  expect(sanitizeImport({ timeoutSec: 9999 }).timeoutSec).toBe(600)
+  expect(sanitizeImport({ timeoutSec: 240.6 }).timeoutSec).toBe(241)
+  expect(sanitizeImport({ timeoutSec: "60" }).timeoutSec).toBeUndefined()
+})
+
 test("showDiff round-trips as boolean", () => {
   const out = sanitizeImport({ showDiff: true })
   expect(out.showDiff).toBe(true)

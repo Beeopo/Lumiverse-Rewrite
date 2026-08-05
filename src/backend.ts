@@ -6,7 +6,14 @@ import { DEFAULT_CONFIG, type RewriteConfig, type FrontendMsg, type DebugEntry, 
 import { stripWrappingQuotes, wasQuoteWrapped } from "./quotes"
 
 const CONFIG_FILE = "config.json"
-const LLM_TIMEOUT_MS = 120_000
+// Read at call time from the (already-warm) config cache so a settings change takes effect
+// without restarting the worker; falls back to the default before the first load.
+// Clamped at the use site (same convention as histCap): update_config writes straight into
+// the cache without validation, and AbortSignal.timeout(0 | NaN) would kill every call.
+const llmTimeoutMs = () => {
+  const s = configCache?.timeoutSec
+  return (Number.isFinite(s) ? Math.max(10, Math.min(600, s as number)) : DEFAULT_CONFIG.timeoutSec) * 1000
+}
 
 let configCache: RewriteConfig | null = null
 
@@ -32,13 +39,23 @@ function cancelUser(userId: string | undefined) {
 // Convenience: register a cancel-eligible abort signal for the caller. Used by every LLM
 // call (rewrite/rewrite_multi/refine/architect/autoprofile) so a user's `cancel` message
 // can stop them mid-flight and — critically — cannot reach OTHER users' operations.
-function withUserCancel(userId: string | undefined): { signal: AbortSignal; done: () => void } {
+function withUserCancel(userId: string | undefined): { signal: AbortSignal; done: () => void; reason: () => string } {
   const ac = new AbortController()
   addAbort(userId, ac)
   return {
-    signal: AbortSignal.any([ac.signal, AbortSignal.timeout(LLM_TIMEOUT_MS)]),
+    signal: AbortSignal.any([ac.signal, AbortSignal.timeout(llmTimeoutMs())]),
     done: () => delAbort(userId, ac),
+    reason: () => abortReason(ac),
   }
+}
+// Both a user cancel and the timeout surface as the same AbortError, so the two used to be
+// reported identically ("Cancelled."). Now that the timeout is user-configurable people will
+// set it low, and a silent "Cancelled." for a deadline they chose is actively misleading —
+// an untouched user controller means the timeout won the race.
+function abortReason(ac: AbortController): string {
+  return ac.signal.aborted
+    ? "Cancelled."
+    : `Timed out after ${Math.round(llmTimeoutMs() / 1000)}s — raise Timeout in Options.`
 }
 
 // ── Debug ring buffer ───────────────────────────────────────────────────────
@@ -318,6 +335,9 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
     }
 
     case "rewrite": {
+      // Hoisted so the catch below can tell a user cancel from a timeout (the ref is
+      // created inside the try).
+      let cancelRef: { reason: () => string } | null = null
       let _debugCfg: RewriteConfig | null = null
       let _debugProfile = ""
       let _debugPromptChars = 0
@@ -380,6 +400,7 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
         _debugT0 = Date.now()
         const ac = new AbortController()
         addAbort(userId, ac)
+        cancelRef = { reason: () => abortReason(ac) }
         let result: unknown
         try {
           result = await spindle.generate.quiet({
@@ -389,7 +410,7 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
             messages,
             parameters: buildParams(cfg),
             reasoning: { source: "off" },
-            signal: AbortSignal.any([ac.signal, AbortSignal.timeout(LLM_TIMEOUT_MS)]),
+            signal: AbortSignal.any([ac.signal, AbortSignal.timeout(llmTimeoutMs())]),
           })
         } finally {
           delAbort(userId, ac)
@@ -407,7 +428,7 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
         spindle.sendToFrontend({ type: "rewrite_result", text, tokens: promptTokens })
       } catch (err: any) {
         if (err?.name === "AbortError") {
-          spindle.sendToFrontend({ type: "rewrite_cancelled" })
+          spindle.sendToFrontend({ type: "rewrite_cancelled", reason: cancelRef?.reason() ?? "Cancelled." })
           break
         }
         spindle.log.error(`rewrite failed: ${err?.message}`)
@@ -446,6 +467,7 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
         // ponytail: re-assembles chat-level context per segment; fine for typical 2-3 message selections
         let totalPromptTokens = 0
         let cancelled = false
+        let cancelReason = "Cancelled."
         for (const seg of msg.segments) {
           const context = await assembleContext(
             cfg,
@@ -474,12 +496,13 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
               messages,
               parameters: buildParams(cfg),
               reasoning: { source: "off" },
-              signal: AbortSignal.any([ac.signal, AbortSignal.timeout(LLM_TIMEOUT_MS)]),
+              signal: AbortSignal.any([ac.signal, AbortSignal.timeout(llmTimeoutMs())]),
             })
           } catch (segErr: any) {
             delAbort(userId, ac)
             if (segErr?.name === "AbortError") {
               cancelled = true
+              cancelReason = abortReason(ac)
               break
             }
             throw segErr
@@ -499,7 +522,7 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
           if (out.length > 0) {
             spindle.sendToFrontend({ type: "rewrite_multi_result", segments: out, tokens: totalPromptTokens || undefined })
           }
-          spindle.sendToFrontend({ type: "rewrite_cancelled" })
+          spindle.sendToFrontend({ type: "rewrite_cancelled", reason: cancelReason })
           break
         }
         if (!out.length) {
@@ -710,6 +733,9 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
     }
 
     case "refine_prompt": {
+      // Hoisted so the catch below can tell a user cancel from a timeout (the ref is
+      // created inside the try).
+      let cancelRef: { reason: () => string } | null = null
       try {
         if (!msg.connectionId) {
           spindle.sendToFrontend({ type: "refine_error", error: "Select a connection first." })
@@ -717,7 +743,7 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
         }
         const cfg = await loadConfig()
         const SYS = "You turn a user's rough note into ONE clear, imperative, verb-first instruction for rewriting a passage of prose. Output ONLY the instruction, no preamble or quotes."
-        const c = withUserCancel(userId)
+        const c = withUserCancel(userId); cancelRef = c
         try {
           const result = await spindle.generate.quiet({
             type: "quiet",
@@ -737,7 +763,7 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
           spindle.sendToFrontend({ type: "refine_result", text })
         } finally { c.done() }
       } catch (err: any) {
-        if (err?.name === "AbortError") { spindle.sendToFrontend({ type: "refine_error", error: "Cancelled." }); break }
+        if (err?.name === "AbortError") { spindle.sendToFrontend({ type: "refine_error", error: cancelRef?.reason() ?? "Cancelled." }); break }
         spindle.log.error(`refine_prompt failed: ${err?.message}`)
         spindle.sendToFrontend({ type: "refine_error", error: String(err?.message ?? err) })
       }
@@ -745,6 +771,9 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
     }
 
     case "architect_style": {
+      // Hoisted so the catch below can tell a user cancel from a timeout (the ref is
+      // created inside the try).
+      let cancelRef: { reason: () => string } | null = null
       try {
         if (!msg.connectionId) {
           spindle.sendToFrontend({ type: "architect_error", error: "Select a connection first." })
@@ -752,7 +781,7 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
         }
         const cfg = await loadConfig()
         const SYS = `From the user's description, produce a rewrite STYLE as strict minified JSON: {"name":"<short name>","prompt":"<one clear imperative rewrite instruction>"}. Output ONLY the JSON object.`
-        const c = withUserCancel(userId)
+        const c = withUserCancel(userId); cancelRef = c
         try {
           const result = await spindle.generate.quiet({
             type: "quiet",
@@ -780,7 +809,7 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
           }
         } finally { c.done() }
       } catch (err: any) {
-        if (err?.name === "AbortError") { spindle.sendToFrontend({ type: "architect_error", error: "Cancelled." }); break }
+        if (err?.name === "AbortError") { spindle.sendToFrontend({ type: "architect_error", error: cancelRef?.reason() ?? "Cancelled." }); break }
         spindle.log.error(`architect_style failed: ${err?.message}`)
         spindle.sendToFrontend({ type: "architect_error", error: String(err?.message ?? err) })
       }
@@ -817,6 +846,9 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
     }
 
     case "gen_autoprofile": {
+      // Hoisted so the catch below can tell a user cancel from a timeout (the ref is
+      // created inside the try).
+      let cancelRef: { reason: () => string } | null = null
       if (!msg.connectionId || !msg.characterId) {
         spindle.sendToFrontend({ type: "autoprofile_error", error: "Need a connection and a character." })
         break
@@ -835,7 +867,7 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
         const SYS = "From a character's profile, write a single imperative rewrite instruction that rewrites a passage into THAT character's narration/voice (diction, register, mannerisms). Output ONLY the instruction."
         const USER = `Name: ${c.name}\nPersonality: ${(c.personality || "").slice(0, 500)}\nDescription: ${(c.description || "").slice(0, 500)}`
         const cfg = await loadConfig()
-        const cancel = withUserCancel(userId)
+        const cancel = withUserCancel(userId); cancelRef = cancel
         try {
           const result = await spindle.generate.quiet({
             type: "quiet",
@@ -859,7 +891,7 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
           spindle.sendToFrontend({ type: "autoprofile_result", chatId: msg.chatId, name, prompt: text })
         } finally { cancel.done() }
       } catch (err: any) {
-        if (err?.name === "AbortError") { spindle.sendToFrontend({ type: "autoprofile_error", error: "Cancelled." }); break }
+        if (err?.name === "AbortError") { spindle.sendToFrontend({ type: "autoprofile_error", error: cancelRef?.reason() ?? "Cancelled." }); break }
         spindle.log.error(`gen_autoprofile failed: ${err?.message}`)
         spindle.sendToFrontend({ type: "autoprofile_error", error: String(err?.message ?? err) })
       } finally {
