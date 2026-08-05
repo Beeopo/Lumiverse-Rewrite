@@ -73,6 +73,11 @@ export function sanitizeImport(raw: unknown): Partial<RewriteConfig> {
     out.historyDepth = Math.max(1, Math.min(100, Math.round(obj.historyDepth)))
   }
 
+  // timeoutSec: integer clamped 10..600
+  if (typeof obj.timeoutSec === "number" && Number.isFinite(obj.timeoutSec)) {
+    out.timeoutSec = Math.max(10, Math.min(600, Math.round(obj.timeoutSec)))
+  }
+
   // Sampler params: number clamped to range (int ones rounded), null kept as explicit
   // "inherit", anything else dropped.
   const samplerRanges = {

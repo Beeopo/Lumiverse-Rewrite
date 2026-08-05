@@ -40,6 +40,9 @@ memory/cortex, and world-book/lore.
 - **Generation parameters** — set temperature, top-P, top-K, max tokens, and frequency/presence
   penalties per rewrite from the Options tab (leave any blank to inherit from the connection
   preset), optionally applied to the AI-authoring calls too.
+- **Request timeout** — how long a generation may run before it's abandoned, set from the Options
+  tab (10–600s, default 120s). Raise it for slow local models or long expansions; lower it if you'd
+  rather fail fast. A timeout says so explicitly, distinct from a cancel.
 - Concise-prompt mode, automatic quote-stripping, cancel in-flight generations.
 - Settings export/import, reset to defaults, and a debug-log export.
 
