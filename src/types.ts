@@ -37,6 +37,9 @@ export interface RewriteConfig {
   frequencyPenalty: number | null
   presencePenalty: number | null
   applyParamsToHelpers: boolean
+  // Style chip order (ids; unknown ids ignored, missing ones appended) and multi-style run mode.
+  styleOrder: string[]
+  multiMode: "order" | "merged"
 }
 
 export const DEFAULT_CONFIG: RewriteConfig = {
@@ -68,6 +71,8 @@ export const DEFAULT_CONFIG: RewriteConfig = {
   frequencyPenalty: null,
   presencePenalty: null,
   applyParamsToHelpers: false,
+  styleOrder: [],
+  multiMode: "order",
 }
 
 // Converts config sampler fields into the host's snake_case `parameters` object.
@@ -88,8 +93,8 @@ export function buildParams(cfg: RewriteConfig): Record<string, number> {
 export type FrontendMsg =
   | { type: "get_config" }
   | { type: "update_config"; config: Partial<RewriteConfig> }
-  | { type: "rewrite"; requestId?: string; profileId: string; customPrompt?: string; text: string; concise: boolean; connectionId: string; lengthPct: number; chatId?: string; messageId?: string; characterId?: string; R?: string; rs?: number; re?: number }
-  | { type: "rewrite_multi"; requestId?: string; segments: { messageId: string; text: string; R: string; rs: number; re: number }[]; profileId: string; customPrompt?: string; concise: boolean; connectionId: string; lengthPct: number; chatId: string; characterId?: string }
+  | { type: "rewrite"; requestId?: string; profileId: string; profileIds?: string[]; multiMode?: "order" | "merged"; customPrompt?: string; text: string; concise: boolean; connectionId: string; lengthPct: number; chatId?: string; messageId?: string; characterId?: string; R?: string; rs?: number; re?: number }
+  | { type: "rewrite_multi"; requestId?: string; profileIds?: string[]; multiMode?: "order" | "merged"; segments: { messageId: string; text: string; R: string; rs: number; re: number }[]; profileId: string; customPrompt?: string; concise: boolean; connectionId: string; lengthPct: number; chatId: string; characterId?: string }
   | { type: "apply"; chatId: string; messageId: string; R: string; rs: number; re: number; output: string }
   | { type: "apply_multi"; chatId: string; items: { messageId: string; R: string; rs: number; re: number; output: string }[] }
   | { type: "undo" }
@@ -126,7 +131,9 @@ export type BackendMsg =
   | { type: "autoprofile_result"; chatId: string; name: string; prompt: string }
   | { type: "autoprofile_error"; error: string }
   | { type: "debug"; entries: DebugEntry[] }
-  | { type: "token_estimate"; total: number; system: number; selection: number; sources: { label: string; tokens: number }[] }
+  | { type: "token_estimate"; total: number; system: number; selection: number; sources: { label: string; tokens: number; on?: boolean }[] }
+  | { type: "rewrite_chunk"; text: string; pass: number; passes: number; label: string; requestId?: string }
+  | { type: "rewrite_stage"; stage: "merging" | "pass"; pass?: number; passes?: number; label?: string; segment?: number; segments?: number; requestId?: string }
   | { type: "rewrite_cancelled"; reason?: string; requestId?: string }
 
 export interface DebugEntry {

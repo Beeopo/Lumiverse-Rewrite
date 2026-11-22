@@ -99,6 +99,13 @@ export function sanitizeImport(raw: unknown): Partial<RewriteConfig> {
     }
   }
 
+  if (Array.isArray(obj.styleOrder)) {
+    out.styleOrder = (obj.styleOrder as unknown[])
+      .filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+      .slice(0, 200)
+  }
+  if (obj.multiMode === "order" || obj.multiMode === "merged") out.multiMode = obj.multiMode
+
   // Explicitly NOT including: connectionId (machine-specific), watch, version, or anything else
 
   return out

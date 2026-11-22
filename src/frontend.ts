@@ -3,6 +3,7 @@ import { DEF_PROFILES } from "./profiles"
 import type { RewriteConfig, BackendMsg, DebugEntry } from "./types"
 import { sanitizeImport } from "./settings-io"
 import { wc } from "./wc"
+import { orderByIds, moveBefore } from "./style-order"
 
 interface Capture {
   chatId: string
@@ -295,16 +296,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     .rw-subhd { font-size: calc(10px * var(--lumiverse-font-scale, 1)); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--lumiverse-text-muted); margin-top: 2px; }
     .rw-empty { font-size: calc(12px * var(--lumiverse-font-scale, 1)); line-height: 1.5; color: var(--lumiverse-text-muted); padding: 4px 2px; }
 
-    /* ── Cost panel (details) ── */
-    .rw-cost { border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill); font-size: calc(12px * var(--lumiverse-font-scale, 1)); }
-    .rw-cost > summary { cursor: pointer; user-select: none; padding: 8px 11px; list-style: none; display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--lumiverse-text-muted); }
-    .rw-cost > summary::-webkit-details-marker { display: none; }
-    .rw-cost > summary::before { content: ""; order: 2; flex: 0 0 auto; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform var(--lumiverse-transition); opacity: .7; }
-    .rw-cost[open] > summary::before { transform: rotate(45deg); }
     .rw-cost-total { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--lumiverse-text); font-weight: 600; }
-    .rw-cost-body { padding: 2px 11px 9px; display: flex; flex-direction: column; gap: 3px; border-top: 1px solid var(--lumiverse-border); margin-top: 0; padding-top: 8px; }
-    .rw-cost-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--lumiverse-text-muted); }
-    .rw-cost-line span:last-child { font-variant-numeric: tabular-nums; color: var(--lumiverse-text); }
 
     /* ── Tabs ── */
     .rw-tabs { display: flex; gap: 3px; background: var(--lumiverse-fill-medium); border-radius: var(--lumiverse-radius-md); padding: 3px; margin: 4px 0 2px; }
@@ -315,7 +307,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     .rw-pane.on { display: flex; }
 
     /* ── Style chip grid ── */
-    .rw-style-sel { margin-left: auto; font-size: calc(11px * var(--lumiverse-font-scale, 1)); font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--lumiverse-text-muted); max-width: 58%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .rw-cgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
     .rw-chip { display: flex; align-items: center; gap: 6px; text-align: left; padding: 0 9px; height: 25px; font: inherit; font-size: calc(11.5px * var(--lumiverse-font-scale, 1)); font-weight: 600; border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill); color: var(--lumiverse-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; transition: background var(--lumiverse-transition-fast), border-color var(--lumiverse-transition-fast), color var(--lumiverse-transition-fast); }
     .rw-chip:hover { border-color: var(--lumiverse-border-hover); background: var(--lumiverse-fill-hover); }
@@ -348,6 +339,55 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       .rw-actions { flex-wrap: wrap; }
     }
 
+    /* ── B layout: the Rewrite pane is a fixed-height column; the text card takes the slack ── */
+    .rw-panel { box-sizing: border-box; }
+    .rw-panel [hidden] { display: none !important; }
+    .rw-main.on { flex: 1 1 auto; min-height: 0; gap: 10px; padding-top: 12px; }
+    .rw-top { display: flex; align-items: center; gap: 8px; }
+    .rw-grow { flex: 1 1 auto; min-width: 0; }
+    .rw-badge { display: inline-flex; align-items: center; gap: 6px; max-width: 70%; height: 24px; padding: 0 9px; border: 0; border-radius: 99px; background: var(--lumiverse-fill-strong); color: var(--lumiverse-text-muted); font: inherit; font-size: calc(11px * var(--lumiverse-font-scale, 1)); font-weight: 600; cursor: pointer; }
+    .rw-badge span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rw-badge:hover { color: var(--lumiverse-text); }
+    .rw-dot { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--lumiverse-text-dim); }
+    .rw-badge.ok .rw-dot { background: var(--lumiverse-success); }
+    .rw-stylebox { display: flex; flex-direction: column; gap: 7px; }
+    .rw-hd-acts { display: inline-flex; gap: 14px; }
+    .rw-lnk { border: 0; background: none; padding: 0; font: inherit; font-size: calc(11.5px * var(--lumiverse-font-scale, 1)); font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--rw-accent-text); cursor: pointer; }
+    .rw-lnk:hover { text-decoration: underline; text-underline-offset: 2px; }
+    .rw-lnk[aria-pressed="true"] { color: #fff; background: color-mix(in srgb, var(--rw-accent) 26%, transparent); border-radius: 5px; padding: 1px 6px; margin: -1px -6px; }
+    .rw-lnk:disabled { opacity: .45; cursor: default; text-decoration: none; }
+    .rw-hint { font-size: calc(11px * var(--lumiverse-font-scale, 1)); color: var(--lumiverse-text-dim); }
+    .rw-mrow { display: flex; align-items: center; gap: 10px; }
+    .rw-seg { display: inline-flex; flex: 0 0 auto; background: var(--lumiverse-fill-strong); border-radius: 8px; padding: 2px; }
+    .rw-seg button { height: 24px; padding: 0 10px; border: 0; border-radius: 6px; background: none; color: var(--lumiverse-text-muted); font: inherit; font-size: calc(11.5px * var(--lumiverse-font-scale, 1)); font-weight: 600; white-space: nowrap; cursor: pointer; }
+    .rw-seg button.on { background: var(--lumiverse-fill-hover); color: var(--lumiverse-text); }
+    .rw-seg button:disabled { opacity: .4; cursor: default; }
+    .rw-chip .rw-ord { display: inline-grid; place-items: center; flex: 0 0 auto; width: 15px; height: 15px; border-radius: 50%; background: var(--rw-accent); color: #fff; font-size: 9.5px; font-weight: 700; }
+    .rw-chip.edit { cursor: grab; padding: 0 3px 0 6px; }
+    .rw-chip.edit .rw-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .rw-chip.edit.off .rw-nm { color: var(--lumiverse-text-dim); text-decoration: line-through; }
+    .rw-chip.dragging { opacity: .45; }
+    .rw-grip { display: inline-flex; color: var(--lumiverse-text-dim); }
+    .rw-eye { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 5px; background: none; color: var(--lumiverse-text-muted); cursor: pointer; }
+    .rw-eye:hover { background: var(--lumiverse-fill-hover); color: var(--lumiverse-text); }
+    .rw-card { flex: 1 1 auto; min-height: 170px; display: flex; flex-direction: column; border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill); overflow: hidden; }
+    .rw-card:focus-within { border-color: var(--rw-accent); }
+    .rw-card-hd { display: flex; align-items: center; gap: 8px; padding: 6px 7px; border-bottom: 1px solid var(--lumiverse-border); }
+    .rw-cardtext { flex: 1 1 auto; min-height: 0; width: 100%; box-sizing: border-box; resize: none; overflow-y: auto; padding: 10px 11px; border: 0; background: transparent; color: var(--lumiverse-text); font: inherit; line-height: 1.55; outline: none; }
+    .rw-card .rw-diff { max-height: none; border: 0; border-radius: 0; background: transparent; }
+    .rw-meta { display: flex; align-items: center; gap: 8px; min-height: 22px; }
+    .rw-meta .rw-cost-total { margin-left: 0; font-weight: 500; color: var(--lumiverse-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rw-details { display: flex; flex-direction: column; gap: 8px; padding: 10px 11px; border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill); }
+    .rw-crow { display: flex; align-items: center; gap: 9px; min-height: 20px; font-size: calc(12.5px * var(--lumiverse-font-scale, 1)); white-space: normal; }
+    .rw-crow .rw-n { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--lumiverse-text); }
+    .rw-crow .rw-n.off { color: var(--lumiverse-text-dim); }
+    .rw-fixed { color: var(--lumiverse-text-muted); padding-left: 43px; }
+    .rw-tot { font-weight: 700; padding-top: 7px; border-top: 1px solid var(--lumiverse-border); }
+    .rw-actions .run { flex: 1 1 auto; width: auto; }
+    .rw-sum { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 500; font-size: calc(11px * var(--lumiverse-font-scale, 1)); max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rw-pane > details.rw-sec:first-child { border-top: 0; }
+    .rw-danger { color: var(--lumiverse-danger); }
+
     @media (prefers-reduced-motion: reduce) {
       .rw-area, .rw-select, .rw-input, .rw-btn, .rw-tab, .rw-chip, .rw-item, .rw-iconbtn, .rw-tog-sl, .rw-tog-sl::before,
       details.rw-sec > summary::after, .rw-cost > summary::before { transition: none !important; }
@@ -376,76 +416,71 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   root.innerHTML = `
     <div class="rw-tabs" id="rw-tabs" role="tablist" aria-label="Rewrite panel sections">
       <button class="rw-tab on" type="button" role="tab" id="rw-tab-rw" data-pane="rw" aria-controls="rw-pane-rw" aria-selected="true" tabindex="0">Rewrite</button>
-      <button class="rw-tab" type="button" role="tab" id="rw-tab-ar" data-pane="ar" aria-controls="rw-pane-ar" aria-selected="false" tabindex="-1">Architect</button>
+      <button class="rw-tab" type="button" role="tab" id="rw-tab-ar" data-pane="ar" aria-controls="rw-pane-ar" aria-selected="false" tabindex="-1">Styles</button>
       <button class="rw-tab" type="button" role="tab" id="rw-tab-op" data-pane="op" aria-controls="rw-pane-op" aria-selected="false" tabindex="-1">Options</button>
     </div>
 
-    <div class="rw-pane on" data-pane="rw" role="tabpanel" id="rw-pane-rw" aria-labelledby="rw-tab-rw" tabindex="0">
-      <div class="rw-sec">
-        <div class="rw-field">
-          <span class="rw-fieldlbl">Connection</span>
-          <select class="rw-select" id="rw-conn" aria-label="Connection"></select>
+    <div class="rw-pane rw-main on" data-pane="rw" role="tabpanel" id="rw-pane-rw" aria-labelledby="rw-tab-rw" tabindex="0">
+      <div class="rw-top">
+        <button class="rw-badge" type="button" id="rw-conn-badge" title="Change the connection in Options"><span class="rw-dot"></span><span id="rw-conn-name">No connection</span></button>
+        <span class="rw-grow"></span>
+        <label class="rw-tog" title="Auto-capture highlighted text"><input type="checkbox" id="rw-watch" /><span class="rw-tog-sl"></span>Watch</label>
+      </div>
+
+      <div class="rw-stylebox">
+        <div class="rw-sec-hd"><span>Style</span><span class="rw-hd-acts"><button class="rw-lnk" type="button" id="rw-multi" aria-pressed="false" title="Pick several styles for one run">Multi</button><button class="rw-lnk" type="button" id="rw-style-edit" aria-pressed="false" title="Reorder, show or hide styles">Edit</button></span></div>
+        <select class="rw-select" id="rw-style" style="display:none;"></select>
+        <div class="rw-cgrid" id="rw-style-grid"></div>
+        <div class="rw-row"><button class="rw-lnk" type="button" id="rw-style-more"></button><span class="rw-hint" id="rw-edit-hint" hidden>Drag to reorder · eye to show or hide</span><button class="rw-lnk" type="button" id="rw-autostyle" title="Generate a voice style from this chat's character">Style this chat</button></div>
+        <div class="rw-mrow" id="rw-multi-row" hidden><div class="rw-seg"><button type="button" class="on" id="rw-mm-order">In order</button><button type="button" id="rw-mm-merged">Merged</button></div><span class="rw-hint" id="rw-multi-hint"></span></div>
+        <div id="rw-custom-wrap" style="display:none; flex-direction:column; gap:8px;">
+          <select class="rw-select" id="rw-custom-saved" aria-label="Recent custom prompts"><option value="">— recent custom prompts —</option></select>
+          <textarea class="rw-area" id="rw-custom" style="min-height:62px" placeholder="Type a one-off rewrite instruction…"></textarea>
+          <div class="rw-btns"><button class="rw-btn accent" id="rw-refine">${aiBtn("Refine")}</button><button class="rw-btn" id="rw-save-as-style">Save as style…</button></div>
         </div>
       </div>
 
-      <details class="rw-sec rw-style-sec" open>
-        <summary><span>Style</span><span class="rw-style-sel" id="rw-style-sel"></span></summary>
-        <div class="rw-sec-body">
-          <select class="rw-select" id="rw-style" style="display:none;"></select>
-          <div class="rw-cgrid" id="rw-style-grid"></div>
-          <button class="rw-btn accent full" id="rw-autostyle" title="Generate a voice style from this chat's character">${aiBtn("Style this chat")}</button>
-          <div id="rw-custom-wrap" style="display:none; flex-direction:column; gap:8px;">
-            <select class="rw-select" id="rw-custom-saved" aria-label="Recent custom prompts"><option value="">— recent custom prompts —</option></select>
-            <textarea class="rw-area" id="rw-custom" style="min-height:62px" placeholder="Type a one-off rewrite instruction…"></textarea>
-            <div class="rw-btns"><button class="rw-btn accent" id="rw-refine">${aiBtn("Refine")}</button><button class="rw-btn" id="rw-save-as-style">Save as style…</button></div>
-          </div>
-        </div>
-      </details>
+      <div class="rw-card">
+        <div class="rw-card-hd"><div class="rw-seg" role="tablist" aria-label="Text view"><button type="button" class="on" id="rw-v-in">Original</button><button type="button" id="rw-v-out" disabled>Rewrite</button><button type="button" id="rw-v-diff" disabled>Changes</button></div><span class="rw-grow"></span><span id="rw-delta" class="rw-delta"></span></div>
+        <textarea class="rw-cardtext" id="rw-input" aria-label="Text to rewrite" placeholder="Highlight text in a message (Watch on), or type here. Alt+R captures the selection."></textarea>
+        <textarea class="rw-cardtext" id="rw-output" aria-label="Rewrite" placeholder="The rewrite appears here. You can edit it before applying." style="display:none;"></textarea>
+        <div id="rw-diff" class="rw-cardtext rw-diff" style="display:none;"></div>
+      </div>
+      <div class="rw-status" id="rw-cap" role="status" aria-live="polite" aria-atomic="true"></div>
 
-      <div class="rw-sec">
-        <div class="rw-sec-hd"><span>Input</span><label class="rw-tog" title="Auto-capture highlighted text"><input type="checkbox" id="rw-watch" /><span class="rw-tog-sl"></span>Watch</label></div>
-        <textarea class="rw-area" id="rw-input" placeholder="Highlight text in a message (Watch on), or type here. Alt+R captures the selection."></textarea>
-        <div class="rw-status" id="rw-cap" role="status" aria-live="polite" aria-atomic="true"></div>
+      <div class="rw-meta"><span class="rw-cost-total" id="rw-cost-total">Context · ≈ 0 tok</span><span class="rw-grow"></span><button class="rw-lnk" type="button" id="rw-details-btn" aria-expanded="false" aria-controls="rw-details">Details</button></div>
+      <div class="rw-details" id="rw-details" hidden>
         <div class="rw-len-row">
           <span class="rw-label" id="rw-len-label">Length</span>
           <input type="range" id="rw-len" min="25" max="200" step="5" value="100" aria-label="Length percent" />
           <input type="number" id="rw-lenval" min="1" max="1000" value="100" class="rw-input rw-num" title="Target length % (1–1000)" aria-label="Length percent" />
         </div>
-        <details class="rw-cost" id="rw-cost">
-          <summary><span>Estimated cost</span><span class="rw-cost-total" id="rw-cost-total">≈ 0 tokens</span></summary>
-          <div class="rw-cost-body" id="rw-cost-body"></div>
-        </details>
+        <div class="rw-crow rw-fixed"><span>System prompt</span><span class="rw-n" id="rw-tok-system">—</span></div>
+        <div class="rw-crow rw-fixed"><span>Selection</span><span class="rw-n" id="rw-tok-selection">—</span></div>
+        <label class="rw-crow rw-tog"><input type="checkbox" id="rw-ctx-prev" /><span class="rw-tog-sl"></span><span class="rw-grow">Previous messages</span><span class="rw-n" id="rw-tok-context">—</span></label>
+        <label class="rw-crow rw-tog"><input type="checkbox" id="rw-ctx-char" /><span class="rw-tog-sl"></span><span class="rw-grow">Character card</span><span class="rw-n" id="rw-tok-character">—</span></label>
+        <label class="rw-crow rw-tog"><input type="checkbox" id="rw-ctx-persona" /><span class="rw-tog-sl"></span><span class="rw-grow">Persona</span><span class="rw-n" id="rw-tok-persona">—</span></label>
+        <label class="rw-crow rw-tog"><input type="checkbox" id="rw-ctx-speaker" /><span class="rw-tog-sl"></span><span class="rw-grow">Speaker hint</span><span class="rw-n" id="rw-tok-speaker">—</span></label>
+        <label class="rw-crow rw-tog"><input type="checkbox" id="rw-ctx-memory" /><span class="rw-tog-sl"></span><span class="rw-grow">Memory</span><span class="rw-n" id="rw-tok-memory">—</span></label>
+        <label class="rw-crow rw-tog"><input type="checkbox" id="rw-ctx-lore" /><span class="rw-tog-sl"></span><span class="rw-grow">Lorebook</span><span class="rw-n" id="rw-tok-lore">—</span></label>
+        <div class="rw-crow rw-tot"><span>Total prompt</span><span class="rw-n" id="rw-tok-total">—</span></div>
+      </div>
+
+      <div class="rw-btns rw-actions">
         <button class="rw-btn primary run" id="rw-run">Run</button>
+        <button class="rw-btn primary run" id="rw-apply" style="display:none;">Apply to message</button>
+        <button class="rw-btn rw-actbtn" id="rw-undo" type="button" aria-label="Undo" title="Undo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg></button>
+        <button class="rw-btn rw-actbtn" id="rw-redo" type="button" aria-label="Redo" title="Redo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 14 20 9 15 4"/><path d="M4 20v-7a4 4 0 0 1 4-4h12"/></svg></button>
+        <button class="rw-btn rw-actbtn" id="rw-copy" type="button" aria-label="Copy" title="Copy"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
       </div>
-
-      <div class="rw-sec">
-        <div class="rw-sec-hd"><span>Output</span><span id="rw-delta" class="rw-delta"></span></div>
-        <textarea class="rw-area rw-output" id="rw-output" placeholder="The rewrite appears here (editable before applying)."></textarea>
-        <label class="rw-tog"><input type="checkbox" id="rw-diff-toggle" /><span class="rw-tog-sl"></span>Show diff</label>
-        <div id="rw-diff" class="rw-diff" style="display:none;"></div>
-        <div class="rw-btns rw-actions">
-          <button class="rw-btn primary" id="rw-apply" style="flex:1;">Apply to message</button>
-          <button class="rw-btn rw-actbtn" id="rw-undo" type="button" aria-label="Undo" title="Undo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg></button>
-          <button class="rw-btn rw-actbtn" id="rw-redo" type="button" aria-label="Redo" title="Redo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 14 20 9 15 4"/><path d="M4 20v-7a4 4 0 0 1 4-4h12"/></svg></button>
-          <button class="rw-btn rw-actbtn" id="rw-copy" type="button" aria-label="Copy" title="Copy"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
-        </div>
-        <div class="rw-status" id="rw-msg" role="status" aria-live="polite" aria-atomic="true"></div>
-      </div>
-
-      <div class="rw-sec">
-        <div class="rw-sec-hd"><span>Context</span></div>
-        <div class="rw-tog-grid">
-          <label class="rw-tog"><input type="checkbox" id="rw-ctx-prev" /><span class="rw-tog-sl"></span>Prev msgs</label>
-          <label class="rw-tog"><input type="checkbox" id="rw-ctx-char" /><span class="rw-tog-sl"></span>Character</label>
-          <label class="rw-tog"><input type="checkbox" id="rw-ctx-persona" /><span class="rw-tog-sl"></span>Persona</label>
-          <label class="rw-tog"><input type="checkbox" id="rw-ctx-speaker" /><span class="rw-tog-sl"></span>Speaker</label>
-          <label class="rw-tog"><input type="checkbox" id="rw-ctx-memory" /><span class="rw-tog-sl"></span>Memory</label>
-          <label class="rw-tog"><input type="checkbox" id="rw-ctx-lore" /><span class="rw-tog-sl"></span>Lore</label>
-        </div>
-      </div>
+      <div class="rw-status" id="rw-msg" role="status" aria-live="polite" aria-atomic="true"></div>
     </div>
 
     <div class="rw-pane" data-pane="ar" role="tabpanel" id="rw-pane-ar" aria-labelledby="rw-tab-ar" tabindex="0">
+      <div class="rw-sec">
+        <div class="rw-sec-hd"><span>Your styles</span></div>
+        <div id="rw-custom-profiles" style="display:flex;flex-direction:column;gap:6px;"></div>
+      </div>
       <div class="rw-sec">
         <div class="rw-sec-hd"><span>Create a style</span></div>
         <input class="rw-input" id="rw-newprof-name" placeholder="New style name" />
@@ -453,46 +488,72 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         <div class="rw-btns"><button class="rw-btn accent" id="rw-newprof-add">Add style</button></div>
       </div>
       <div class="rw-sec">
-        <div class="rw-sec-hd"><span>Generate with AI</span></div>
+        <div class="rw-sec-hd"><span>Write one with AI</span></div>
         <input class="rw-input" id="rw-architect-desc" placeholder="Describe a style for AI to write…" />
         <div class="rw-btns"><button class="rw-btn accent" id="rw-architect">${aiBtn("AI generate style")}</button></div>
       </div>
-      <div class="rw-sec">
-        <div class="rw-sec-hd"><span>Saved styles</span></div>
-        <div id="rw-custom-profiles" style="display:flex;flex-direction:column;gap:6px;"></div>
-        <div class="rw-subhd">Hide built-ins</div>
+      <details class="rw-sec">
+        <summary><span>Hide built-in styles</span></summary>
         <div id="rw-hide-builtins" class="rw-tog-grid"></div>
-      </div>
+      </details>
     </div>
 
     <div class="rw-pane" data-pane="op" role="tabpanel" id="rw-pane-op" aria-labelledby="rw-tab-op" tabindex="0">
-      <div class="rw-sec">
-        <div class="rw-sec-hd"><span>Behaviour</span></div>
-        <div class="rw-tog-grid">
-          <label class="rw-tog"><input type="checkbox" id="rw-concise" /><span class="rw-tog-sl"></span>Concise prompt</label>
-          <label class="rw-tog"><input type="checkbox" id="rw-autoapply" /><span class="rw-tog-sl"></span>Auto-apply</label>
-          <label class="rw-tog"><input type="checkbox" id="rw-debug" /><span class="rw-tog-sl"></span>Debug log</label>
+      <details class="rw-sec" open>
+        <summary><span>Connection</span><span class="rw-sum" id="rw-sum-conn"></span></summary>
+        <select class="rw-select" id="rw-conn" aria-label="Connection"></select>
+      </details>
+      <details class="rw-sec">
+        <summary><span>Behaviour</span><span class="rw-sum" id="rw-sum-beh"></span></summary>
+        <div class="rw-sec-body">
+          <div class="rw-tog-grid">
+            <label class="rw-tog"><input type="checkbox" id="rw-concise" /><span class="rw-tog-sl"></span>Concise prompt</label>
+            <label class="rw-tog"><input type="checkbox" id="rw-autoapply" /><span class="rw-tog-sl"></span>Auto-apply</label>
+            <label class="rw-tog"><input type="checkbox" id="rw-diff-toggle" /><span class="rw-tog-sl"></span>Open on Changes</label>
+            <label class="rw-tog"><input type="checkbox" id="rw-debug" /><span class="rw-tog-sl"></span>Debug log</label>
+          </div>
+          <div class="rw-row"><span class="rw-label">Undo depth</span><input type="number" id="rw-histdepth" min="1" max="100" value="30" class="rw-input rw-num" title="Undo/redo history depth (1–100)" aria-label="Undo history depth" /></div>
+          <div class="rw-row"><span class="rw-label">Timeout (s)</span><input type="number" id="rw-timeout" min="10" max="600" step="5" value="120" class="rw-input rw-num" title="Give up on a model call after this many seconds (10–600)" aria-label="Request timeout in seconds" /></div>
         </div>
-        <div class="rw-row"><span class="rw-label">Undo depth</span><input type="number" id="rw-histdepth" min="1" max="100" value="30" class="rw-input rw-num" title="Undo/redo history depth (1–100)" aria-label="Undo history depth" /></div>
-        <div class="rw-row"><span class="rw-label">Timeout (s)</span><input type="number" id="rw-timeout" min="10" max="600" step="5" value="120" class="rw-input rw-num" title="Give up on a model call after this many seconds (10–600)" aria-label="Request timeout in seconds" /></div>
-      </div>
-      <div class="rw-sec">
-        <div class="rw-sec-hd"><span>Sampling</span></div>
-        <div class="rw-row"><span class="rw-label">Temperature</span><input type="number" id="rw-temp" min="0" max="2" step="0.05" placeholder="inherit" class="rw-input rw-num" title="Sampling temperature (0–2)" aria-label="Temperature" /></div>
-        <div class="rw-row"><span class="rw-label">Top P</span><input type="number" id="rw-topp" min="0" max="1" step="0.05" placeholder="inherit" class="rw-input rw-num" title="Top P (0–1)" aria-label="Top P" /></div>
-        <div class="rw-row"><span class="rw-label">Top K</span><input type="number" id="rw-topk" min="0" step="1" placeholder="inherit" class="rw-input rw-num" title="Top K" aria-label="Top K" /></div>
-        <div class="rw-row"><span class="rw-label">Max tokens</span><input type="number" id="rw-maxtok" min="1" step="1" placeholder="inherit" class="rw-input rw-num" title="Max output tokens" aria-label="Max tokens" /></div>
-        <div class="rw-row"><span class="rw-label">Frequency penalty</span><input type="number" id="rw-freqpen" min="-2" max="2" step="0.1" placeholder="inherit" class="rw-input rw-num" title="Frequency penalty (-2–2)" aria-label="Frequency penalty" /></div>
-        <div class="rw-row"><span class="rw-label">Presence penalty</span><input type="number" id="rw-prespen" min="-2" max="2" step="0.1" placeholder="inherit" class="rw-input rw-num" title="Presence penalty (-2–2)" aria-label="Presence penalty" /></div>
-        <label class="rw-tog"><input type="checkbox" id="rw-apply-helpers" /><span class="rw-tog-sl"></span>Use these for AI helper calls too</label>
-      </div>
-      <div class="rw-sec">
-        <div class="rw-sec-hd"><span>Data</span></div>
-        <div class="rw-btns"><button class="rw-btn" id="rw-export">Export settings</button><button class="rw-btn" id="rw-import">Import settings</button><button class="rw-btn" id="rw-export-debug">Export debug</button><button class="rw-btn" id="rw-reset">Reset to defaults</button></div>
-      </div>
+      </details>
+      <details class="rw-sec">
+        <summary><span>Sampling</span><span class="rw-sum" id="rw-sum-samp"></span></summary>
+        <div class="rw-sec-body">
+          <div class="rw-row"><span class="rw-label">Temperature</span><input type="number" id="rw-temp" min="0" max="2" step="0.05" placeholder="inherit" class="rw-input rw-num" title="Sampling temperature (0–2)" aria-label="Temperature" /></div>
+          <div class="rw-row"><span class="rw-label">Top P</span><input type="number" id="rw-topp" min="0" max="1" step="0.05" placeholder="inherit" class="rw-input rw-num" title="Top P (0–1)" aria-label="Top P" /></div>
+          <div class="rw-row"><span class="rw-label">Top K</span><input type="number" id="rw-topk" min="0" step="1" placeholder="inherit" class="rw-input rw-num" title="Top K" aria-label="Top K" /></div>
+          <div class="rw-row"><span class="rw-label">Max tokens</span><input type="number" id="rw-maxtok" min="1" step="1" placeholder="inherit" class="rw-input rw-num" title="Max output tokens" aria-label="Max tokens" /></div>
+          <div class="rw-row"><span class="rw-label">Frequency penalty</span><input type="number" id="rw-freqpen" min="-2" max="2" step="0.1" placeholder="inherit" class="rw-input rw-num" title="Frequency penalty (-2–2)" aria-label="Frequency penalty" /></div>
+          <div class="rw-row"><span class="rw-label">Presence penalty</span><input type="number" id="rw-prespen" min="-2" max="2" step="0.1" placeholder="inherit" class="rw-input rw-num" title="Presence penalty (-2–2)" aria-label="Presence penalty" /></div>
+          <label class="rw-tog"><input type="checkbox" id="rw-apply-helpers" /><span class="rw-tog-sl"></span>Use these for AI helper calls too</label>
+        </div>
+      </details>
+      <details class="rw-sec">
+        <summary><span>Data</span><span class="rw-sum">Export, import, reset</span></summary>
+        <div class="rw-btns"><button class="rw-btn" id="rw-export">Export settings</button><button class="rw-btn" id="rw-import">Import settings</button><button class="rw-btn" id="rw-export-debug">Export debug</button><button class="rw-btn rw-danger" id="rw-reset">Reset to defaults…</button></div>
+      </details>
     </div>
   `
   tab.root.appendChild(root)
+
+  // The drawer gives tab roots no fixed height, and host elements above the tab root are
+  // out of reach, so size the panel from its own top edge to the bottom of the window.
+  // Content taller than that still grows the panel and scrolls the drawer.
+  let lastFit = ""
+  const fitPanel = () => {
+    if (!root.isConnected) return
+    const r = root.getBoundingClientRect()
+    if (!r.width) return
+    const zoom = r.width / (root.offsetWidth || r.width) // rendered vs layout px under UI scale
+    const h = `${Math.max(420, Math.floor((window.innerHeight - r.top) / zoom))}px`
+    if (h !== lastFit) { lastFit = h; root.style.minHeight = h }
+  }
+  // Animation-frame, resize and ResizeObserver callbacks don't reach this tab in the host,
+  // so refit on tab activation and with a cheap timer check (writes only on change).
+  // shortcut: 1s polling; swap for a host resize event if Spindle adds one.
+  const offActivate = tab.onActivate(() => { setTimeout(fitPanel, 30); setTimeout(fitPanel, 300) })
+  const fitTimer = setInterval(fitPanel, 1000)
+  setTimeout(fitPanel, 50)
 
   const $ = <T extends HTMLElement>(id: string) => root.querySelector(`#${id}`) as T
   const connEl = $("rw-conn") as HTMLSelectElement
@@ -505,7 +566,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   const capEl = $("rw-cap")
   const styleEl = $("rw-style") as HTMLSelectElement
   const styleGridEl = $("rw-style-grid")
-  const styleSelEl = $("rw-style-sel")
   const tabsEl = $("rw-tabs")
   const lenEl = $("rw-len") as HTMLInputElement
   const lenValEl = $("rw-lenval") as HTMLInputElement
@@ -525,12 +585,29 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   const ctxSpeaker = $("rw-ctx-speaker") as HTMLInputElement
   const ctxMemory = $("rw-ctx-memory") as HTMLInputElement
   const ctxLore = $("rw-ctx-lore") as HTMLInputElement
-  const costEl = $("rw-cost") as HTMLDetailsElement
   const costTotalEl = $("rw-cost-total")
-  const costBodyEl = $("rw-cost-body")
   const customWrap = $("rw-custom-wrap") as HTMLDivElement
   const customEl = $("rw-custom") as HTMLTextAreaElement
   const customSavedEl = $("rw-custom-saved") as HTMLSelectElement
+  const connBadge = $("rw-conn-badge") as HTMLButtonElement
+  const connNameEl = $("rw-conn-name")
+  const multiBtn = $("rw-multi") as HTMLButtonElement
+  const styleEditBtn = $("rw-style-edit") as HTMLButtonElement
+  const styleMoreBtn = $("rw-style-more") as HTMLButtonElement
+  const editHintEl = $("rw-edit-hint")
+  const multiRowEl = $("rw-multi-row")
+  const mmOrderBtn = $("rw-mm-order") as HTMLButtonElement
+  const mmMergedBtn = $("rw-mm-merged") as HTMLButtonElement
+  const multiHintEl = $("rw-multi-hint")
+  const viewInBtn = $("rw-v-in") as HTMLButtonElement
+  const viewOutBtn = $("rw-v-out") as HTMLButtonElement
+  const viewDiffBtn = $("rw-v-diff") as HTMLButtonElement
+  const detailsBtn = $("rw-details-btn") as HTMLButtonElement
+  const detailsEl = $("rw-details")
+  const sumConnEl = $("rw-sum-conn")
+  const sumBehEl = $("rw-sum-beh")
+  const sumSampEl = $("rw-sum-samp")
+  const tokEl = (k: string) => $(`rw-tok-${k}`)
 
   const customProfListEl = $("rw-custom-profiles")
   const newProfName = $("rw-newprof-name") as HTMLInputElement
@@ -586,29 +663,109 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   root.querySelectorAll(".rw-sec-hd > span:first-child").forEach((s) => { s.setAttribute("role", "heading"); s.setAttribute("aria-level", "3") })
   root.querySelectorAll(".rw-subhd").forEach((s) => { s.setAttribute("role", "heading"); s.setAttribute("aria-level", "4") })
 
-  // The Style <select> stays in the DOM as the single source of truth (all the existing
-  // value/option/change logic is untouched); this just mirrors it as a tappable chip grid.
+  // The Style <select> stays the single source of truth for a single-style run (all the
+  // value/change logic hangs off it); the chip grid mirrors it in the user's saved order.
+  const GRIP_SVG = `<svg viewBox="0 0 10 16" width="7" height="12" fill="currentColor" aria-hidden="true"><circle cx="3" cy="3" r="1.4"/><circle cx="7" cy="3" r="1.4"/><circle cx="3" cy="8" r="1.4"/><circle cx="7" cy="8" r="1.4"/><circle cx="3" cy="13" r="1.4"/><circle cx="7" cy="13" r="1.4"/></svg>`
+  const EYE_SVG = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>`
+  const EYE_OFF_SVG = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"/><path d="M10.6 5.1A10 10 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4.1M6.6 6.6A17 17 0 0 0 2 12s3.5 7 10 7a9.7 9.7 0 0 0 4.4-1"/></svg>`
+  const STYLE_ROWS_SHOWN = 6
+  // A chat's auto style id is "auto:<chatId>"; order and hide it as one "auto" slot.
+  const styleKey = (id: string) => (id.startsWith("auto:") ? "auto" : id)
+  function allStyles(): { id: string; name: string; auto?: boolean }[] {
+    const list: { id: string; name: string; auto?: boolean }[] = []
+    const a = ctx.getActiveChat()
+    const auto = a.chatId ? autoProfilesMap[a.chatId] : undefined
+    if (auto) list.push({ id: "auto:" + a.chatId, name: auto.name, auto: true })
+    for (const p of [...DEF_PROFILES].sort((x, y) => x.order - y.order)) list.push({ id: p.id, name: p.name })
+    for (const p of customProfilesList) list.push({ id: p.id, name: p.name })
+    return orderByIds(list, styleOrderList, (x) => styleKey(x.id))
+  }
+  const isHidden = (id: string) => hiddenProfilesList.includes(styleKey(id))
+
   function renderStyleChips() {
     styleGridEl.replaceChildren()
-    for (const o of [...styleEl.options]) {
+    const all = allStyles()
+    const visible = all.filter((x) => !isHidden(x.id))
+    let shown = styleEditing ? all : styleExpanded ? visible : visible.slice(0, STYLE_ROWS_SHOWN)
+    if (!styleEditing && !styleExpanded) {
+      // Never hide the active choice behind "Show all".
+      const keep = multiOn ? multiPicks : [styleEl.value]
+      for (const id of keep) { const x = visible.find((v) => v.id === id); if (x && !shown.includes(x)) shown = [...shown, x] }
+    }
+    for (const x of shown) {
+      if (styleEditing) {
+        const chip = ctx.dom.createElement("div")
+        chip.className = "rw-chip edit" + (isHidden(x.id) ? " off" : "")
+        chip.draggable = true
+        chip.dataset.key = styleKey(x.id)
+        chip.innerHTML = `<span class="rw-grip">${GRIP_SVG}</span><span class="rw-nm"></span><button type="button" class="rw-eye">${isHidden(x.id) ? EYE_OFF_SVG : EYE_SVG}</button>`
+        ;(chip.querySelector(".rw-nm") as HTMLElement).textContent = x.name
+        const eye = chip.querySelector(".rw-eye") as HTMLButtonElement
+        eye.setAttribute("aria-label", `${isHidden(x.id) ? "Show" : "Hide"} ${x.name}`)
+        eye.addEventListener("click", () => {
+          const k = styleKey(x.id)
+          hiddenProfilesList = hiddenProfilesList.includes(k) ? hiddenProfilesList.filter((h) => h !== k) : [...hiddenProfilesList, k]
+          ctx.sendToBackend({ type: "update_config", config: { hiddenProfiles: hiddenProfilesList } })
+          syncProfileSigs()
+          rebuildStyleOptions(); renderStyleMgmt()
+        })
+        styleGridEl.appendChild(chip)
+        continue
+      }
       const chip = ctx.dom.createElement("button") as HTMLButtonElement
       chip.type = "button"
-      chip.className = "rw-chip"
-      const isSel = o.value === styleEl.value
-      if (isSel) chip.classList.add("on")
-      chip.setAttribute("aria-pressed", isSel ? "true" : "false")
-      if (o.value.startsWith("auto:")) chip.classList.add("auto", "wide")
-      if (o.value === "__custom__") chip.classList.add("wide")
-      chip.textContent = o.textContent
-      chip.title = o.textContent ?? ""
-      chip.addEventListener("click", () => { styleEl.value = o.value; styleEl.dispatchEvent(new Event("change")) })
+      chip.className = "rw-chip" + (x.auto ? " auto" : "")
+      chip.title = x.name
+      const pick = multiPicks.indexOf(x.id)
+      const on = multiOn ? pick >= 0 : x.id === styleEl.value
+      chip.classList.toggle("on", on)
+      chip.setAttribute("aria-pressed", on ? "true" : "false")
+      if (multiOn && pick >= 0) {
+        const ord = ctx.dom.createElement("span"); ord.className = "rw-ord"; ord.textContent = String(pick + 1)
+        chip.appendChild(ord)
+      }
+      chip.appendChild(document.createTextNode(x.name))
+      chip.addEventListener("click", () => {
+        if (multiOn) {
+          multiPicks = multiPicks.includes(x.id) ? multiPicks.filter((p) => p !== x.id) : [...multiPicks, x.id]
+          renderStyleChips()
+        } else { styleEl.value = x.id; styleEl.dispatchEvent(new Event("change")) }
+      })
       styleGridEl.appendChild(chip)
     }
-    const sel = styleEl.options[styleEl.selectedIndex]
-    styleSelEl.textContent = sel ? (sel.textContent ?? "") : ""
+    if (!styleEditing && !multiOn) {
+      const c = ctx.dom.createElement("button") as HTMLButtonElement
+      c.type = "button"; c.className = "rw-chip wide"; c.textContent = "Custom…"
+      const on = styleEl.value === "__custom__"
+      c.classList.toggle("on", on); c.setAttribute("aria-pressed", on ? "true" : "false")
+      c.addEventListener("click", () => { styleEl.value = "__custom__"; styleEl.dispatchEvent(new Event("change")) })
+      styleGridEl.appendChild(c)
+    }
+    styleMoreBtn.hidden = styleEditing || visible.length <= STYLE_ROWS_SHOWN
+    styleMoreBtn.textContent = styleExpanded ? "Show fewer" : `Show all ${visible.length}`
+    styleEditBtn.textContent = styleEditing ? "Done" : "Edit"
+    styleEditBtn.setAttribute("aria-pressed", styleEditing ? "true" : "false")
+    editHintEl.hidden = !styleEditing
+    autoStyleBtn.hidden = styleEditing
+    multiBtn.setAttribute("aria-pressed", multiOn ? "true" : "false")
+    multiRowEl.hidden = !multiOn || styleEditing
+    mmOrderBtn.classList.toggle("on", multiMode === "order")
+    mmMergedBtn.classList.toggle("on", multiMode === "merged")
+    const n = multiPicks.length
+    multiHintEl.textContent = n < 2 ? "Pick two or more styles" : multiMode === "order" ? `${n} passes, each on the last one's output` : `${n} styles merged into one prompt`
+    customWrap.style.display = !multiOn && styleEl.value === "__custom__" ? "flex" : "none"
   }
 
   let customProfilesList: { id: string; name: string; prompt: string }[] = []
+  let styleOrderList: string[] = []
+  let lastOrderSig = ""
+  let styleExpanded = false
+  let styleEditing = false
+  let multiOn = false
+  let multiPicks: string[] = []
+  let multiMode: "order" | "merged" = "order"
+  let view: "in" | "out" | "diff" = "in"
+  let lastEstimate: Extract<BackendMsg, { type: "token_estimate" }> | null = null
   let hiddenProfilesList: string[] = []
   let autoProfilesMap: Record<string, { name: string; prompt: string }> = {}
   let pendingConnId = ""
@@ -649,34 +806,24 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   function rebuildStyleOptions() {
     const cur = styleEl.value
     styleEl.replaceChildren()
+    for (const x of allStyles()) {
+      if (isHidden(x.id)) continue
+      const o = ctx.dom.createElement("option") as HTMLOptionElement
+      o.value = x.id; o.textContent = x.name
+      styleEl.appendChild(o)
+    }
     const co = ctx.dom.createElement("option") as HTMLOptionElement
     co.value = "__custom__"; co.textContent = "Custom…"
     styleEl.appendChild(co)
-    const a = ctx.getActiveChat()
-    const auto = a.chatId ? autoProfilesMap[a.chatId] : undefined
-    if (auto) {
-      const o = ctx.dom.createElement("option") as HTMLOptionElement
-      o.value = "auto:" + a.chatId; o.textContent = auto.name
-      styleEl.appendChild(o)
-    }
-    for (const p of [...DEF_PROFILES].sort((a, b) => a.order - b.order)) {
-      if (hiddenProfilesList.includes(p.id)) continue
-      const o = ctx.dom.createElement("option") as HTMLOptionElement
-      o.value = p.id; o.textContent = p.name
-      styleEl.appendChild(o)
-    }
-    for (const p of customProfilesList) {
-      const o = ctx.dom.createElement("option") as HTMLOptionElement
-      o.value = p.id; o.textContent = p.name
-      styleEl.appendChild(o)
-    }
-    if (cur && [...styleEl.options].some((o) => o.value === cur)) styleEl.value = cur
+    const has = (id: string) => [...styleEl.options].some((o) => o.value === id)
+    if (cur && has(cur)) styleEl.value = cur
     else {
-      // Default to the first real built-in style (skip the Custom… / auto entries) so the
-      // panel opens ready to rewrite rather than on an empty Custom prompt.
-      const firstBuiltin = [...styleEl.options].find((o) => o.value !== "__custom__" && !o.value.startsWith("auto:"))
-      if (firstBuiltin) styleEl.value = firstBuiltin.value
+      // Default to the first real style (not Custom… or the chat's auto style) so the panel
+      // opens ready to rewrite rather than on an empty Custom prompt.
+      const first = [...styleEl.options].find((o) => o.value !== "__custom__" && !o.value.startsWith("auto:"))
+      if (first) styleEl.value = first.value
     }
+    multiPicks = multiPicks.filter(has)
     renderStyleChips()
   }
 
@@ -758,13 +905,13 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const { customProfiles, customPrompts, hiddenProfiles, usePrevMessages, prevMessageCount,
       speakerAware, useCharCard, useUserPersona, useMemory, useLorebook,
       lengthPct, concise, autoApply, historyDepth, timeoutSec, showDiff,
-      temperature, topP, topK, maxTokens, frequencyPenalty, presencePenalty, applyParamsToHelpers } = lastConfig
+      temperature, topP, topK, maxTokens, frequencyPenalty, presencePenalty, applyParamsToHelpers, styleOrder, multiMode } = lastConfig
     // historyDepth + showDiff are both accepted by sanitizeImport — include them so an
     // export→import round-trip preserves a customized value instead of silently reverting.
     const obj = { version: 1, customProfiles, customPrompts, hiddenProfiles, usePrevMessages,
       prevMessageCount, speakerAware, useCharCard, useUserPersona, useMemory, useLorebook,
       lengthPct, concise, autoApply, historyDepth, timeoutSec, showDiff,
-      temperature, topP, topK, maxTokens, frequencyPenalty, presencePenalty, applyParamsToHelpers }
+      temperature, topP, topK, maxTokens, frequencyPenalty, presencePenalty, applyParamsToHelpers, styleOrder, multiMode }
     const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" })
     const a = document.createElement("a")
     a.href = URL.createObjectURL(blob)
@@ -813,6 +960,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     // only refreshes form values, so without this the panel keeps a stale capture/output/
     // "Update" profile-edit state after reset.
     capture = null; multiCapture = null; resultPending = false
+    multiOn = false; multiPicks = []; styleEditing = false; styleExpanded = false
     inputEl.value = ""; outputEl.value = ""; outputEl.readOnly = false
     editingProfileId = null; newProfAdd.textContent = "Add style"
     newProfName.value = ""; newProfPrompt.value = ""
@@ -881,15 +1029,72 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     el.setAttribute("aria-live", isErr ? "assertive" : "polite")
   }
 
+  // The card shows one of Original / Rewrite / Changes.
+  function setView(v: "in" | "out" | "diff") {
+    if (v !== "in" && !outputEl.value && !running) v = "in"
+    view = v
+    inputEl.style.display = v === "in" ? "" : "none"
+    outputEl.style.display = v === "out" ? "" : "none"
+    diffEl.style.display = v === "diff" ? "block" : "none"
+    viewInBtn.classList.toggle("on", v === "in")
+    viewOutBtn.classList.toggle("on", v === "out")
+    viewDiffBtn.classList.toggle("on", v === "diff")
+    if (v === "diff") renderDiff(diffEl, inputEl.value, outputEl.value)
+  }
   function updateDiffView() {
-    if (diffToggle.checked && outputEl.value) {
-      renderDiff(diffEl, inputEl.value, outputEl.value)
-      diffEl.style.display = "block"
-    } else {
-      diffEl.style.display = "none"
-    }
+    const has = !!outputEl.value
+    viewOutBtn.disabled = !has && !running
+    viewDiffBtn.disabled = !has
+    if (!has && view !== "in" && !running) setView("in")
+    else if (view === "diff") renderDiff(diffEl, inputEl.value, outputEl.value)
     const d = wc(outputEl.value) - wc(inputEl.value)
-    deltaEl.textContent = outputEl.value ? `${d >= 0 ? "+" : ""}${d} words` : ""
+    deltaEl.textContent = has ? `${d >= 0 ? "+" : ""}${d} words` : ""
+    syncActions()
+  }
+  // One main button: Run, Cancel while running, then Apply once a result for a captured
+  // selection is waiting (Run stays beside it as "Run again").
+  function syncActions() {
+    const showApply = !running && resultPending && !!outputEl.value.trim() && !!(capture || multiCapture)
+    applyBtn.style.display = showApply ? "" : "none"
+    runBtn.classList.toggle("primary", !showApply)
+    runBtn.classList.toggle("run", !showApply)
+    runBtn.textContent = running ? "Cancel" : showApply ? "Run again" : "Run"
+  }
+  const CTX_BOXES: Record<string, HTMLInputElement> = { context: ctxPrev, character: ctxChar, persona: ctxPersona, speaker: ctxSpeaker, memory: ctxMemory, lore: ctxLore }
+  // Details rows: each source's switch with what it costs; a switched-off source shows what it would add.
+  function renderEstimate() {
+    const m = lastEstimate
+    let on = 0
+    for (const [k, box] of Object.entries(CTX_BOXES)) {
+      if (box.checked) on++
+      const el = tokEl(k)
+      const src = m?.sources.find((x) => x.label === k)
+      el.textContent = src ? (box.checked ? String(src.tokens) : `+${src.tokens}`) : "—"
+      el.classList.toggle("off", !box.checked)
+    }
+    tokEl("system").textContent = m ? String(m.system) : "—"
+    tokEl("selection").textContent = m ? String(m.selection) : "—"
+    tokEl("total").textContent = m ? String(m.total) : "—"
+    costTotalEl.textContent = `Context ${on} of ${Object.keys(CTX_BOXES).length} · ≈ ${m?.total ?? 0} tok`
+  }
+  function setDetails(open: boolean, persist: boolean) {
+    detailsEl.hidden = !open
+    detailsBtn.setAttribute("aria-expanded", open ? "true" : "false")
+    detailsBtn.textContent = open ? "Hide" : "Details"
+    if (persist) ctx.sendToBackend({ type: "update_config", config: { costCollapsed: !open } })
+    if (open) schedulePreview()
+  }
+  function syncConnBadge() {
+    const o = connEl.options[connEl.selectedIndex]
+    const name = connEl.value ? (o?.textContent ?? "") : ""
+    connNameEl.textContent = name || "No connection"
+    connBadge.classList.toggle("ok", !!name)
+    sumConnEl.textContent = name || "None selected"
+  }
+  function syncSummaries() {
+    sumBehEl.textContent = `Auto-apply ${autoApplyEl.checked ? "on" : "off"} · ${timeoutEl.value}s`
+    const set = [tempEl, topPEl, topKEl, maxTokEl, freqPenEl, presPenEl].filter((e) => e.value.trim() !== "").length
+    sumSampEl.textContent = set ? `${set} set · rest inherit` : "Inherits preset"
   }
 
   // ── Live token-cost estimation (debounced; separate timer so it never fights
@@ -903,8 +1108,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       const text = inputEl.value
       if (!text.trim()) {
         // Clear the panel without a round-trip.
-        costTotalEl.textContent = "≈ 0 tokens"
-        costBodyEl.replaceChildren()
+        lastEstimate = null
+        renderEstimate()
         return
       }
       const isCustom = styleEl.value === "__custom__"
@@ -1049,7 +1254,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   exportDebugBtn.addEventListener("click", () => {
     ctx.sendToBackend({ type: "get_debug" })
   })
-  connEl.addEventListener("change", () => ctx.sendToBackend({ type: "update_config", config: { connectionId: connEl.value } }))
+  connEl.addEventListener("change", () => { syncConnBadge(); ctx.sendToBackend({ type: "update_config", config: { connectionId: connEl.value } }) })
   watchEl.addEventListener("change", () => ctx.sendToBackend({ type: "update_config", config: { watch: watchEl.checked } }))
   conciseEl.addEventListener("change", () => { ctx.sendToBackend({ type: "update_config", config: { concise: conciseEl.checked } }); schedulePreview() })
   ctxPrev.addEventListener("change", () => { ctx.sendToBackend({ type: "update_config", config: { usePrevMessages: ctxPrev.checked } }); schedulePreview() })
@@ -1063,15 +1268,50 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   // Typing into the input or a custom instruction changes the estimate too.
   inputEl.addEventListener("input", () => { schedulePreview(); updateDiffView() })
   customEl.addEventListener("input", schedulePreview)
-  // Persist the cost panel's collapse state and refresh the estimate when expanded.
-  costEl.addEventListener("toggle", () => {
-    ctx.sendToBackend({ type: "update_config", config: { costCollapsed: !costEl.open } })
-    if (costEl.open) schedulePreview()
-  })
+  detailsBtn.addEventListener("click", () => setDetails(!!detailsEl.hidden, true))
+  // Switch counts update at once; token figures follow the debounced estimate.
+  for (const box of Object.values(CTX_BOXES)) box.addEventListener("change", renderEstimate)
   diffToggle.addEventListener("change", () => {
     ctx.sendToBackend({ type: "update_config", config: { showDiff: diffToggle.checked } })
-    updateDiffView()
   })
+  viewInBtn.addEventListener("click", () => setView("in"))
+  viewOutBtn.addEventListener("click", () => setView("out"))
+  viewDiffBtn.addEventListener("click", () => setView("diff"))
+  connBadge.addEventListener("click", () => { switchTab("op"); connEl.focus() })
+  ;($("rw-pane-op") as HTMLElement).addEventListener("change", syncSummaries)
+  multiBtn.addEventListener("click", () => {
+    multiOn = !multiOn
+    multiPicks = multiOn && styleEl.value !== "__custom__" ? [styleEl.value] : []
+    renderStyleChips()
+  })
+  const setMultiMode = (mode: "order" | "merged") => {
+    multiMode = mode
+    ctx.sendToBackend({ type: "update_config", config: { multiMode: mode } })
+    renderStyleChips()
+  }
+  mmOrderBtn.addEventListener("click", () => setMultiMode("order"))
+  mmMergedBtn.addEventListener("click", () => setMultiMode("merged"))
+  styleEditBtn.addEventListener("click", () => { styleEditing = !styleEditing; renderStyleChips() })
+  styleMoreBtn.addEventListener("click", () => { styleExpanded = !styleExpanded; renderStyleChips() })
+  // Edit mode drag-to-reorder (chips carry their order key in data-key).
+  let dragKey: string | null = null
+  styleGridEl.addEventListener("dragstart", (e) => {
+    const c = (e.target as HTMLElement).closest(".rw-chip.edit") as HTMLElement | null
+    if (c) { dragKey = c.dataset.key ?? null; c.classList.add("dragging") }
+  })
+  styleGridEl.addEventListener("dragover", (e) => { if (dragKey) e.preventDefault() })
+  styleGridEl.addEventListener("drop", (e) => {
+    e.preventDefault()
+    const t = (e.target as HTMLElement).closest(".rw-chip.edit") as HTMLElement | null
+    const to = t?.dataset.key
+    if (!dragKey || !to || to === dragKey) return
+    styleOrderList = moveBefore(allStyles().map((x) => styleKey(x.id)), dragKey, to)
+    lastOrderSig = JSON.stringify(styleOrderList)
+    dragKey = null
+    ctx.sendToBackend({ type: "update_config", config: { styleOrder: styleOrderList } })
+    rebuildStyleOptions()
+  })
+  styleGridEl.addEventListener("dragend", () => { dragKey = null; renderStyleChips() })
   outputEl.addEventListener("input", updateDiffView)
 
   function endRun() {
@@ -1084,15 +1324,21 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     // leaving Watch stuck (mobile has no Alt+R escape).
     resultPending = false
     if (runTimer) { clearTimeout(runTimer); runTimer = null }
+    syncActions()
   }
 
   runBtn.addEventListener("click", () => {
     if (running) { ctx.sendToBackend({ type: "cancel" }); return }
-    const isCustom = styleEl.value === "__custom__"
+    if (multiOn && multiPicks.length === 0) { setStatus(msgEl, "Pick at least one style.", true); return }
+    const multiActive = multiOn && multiPicks.length > 1
+    const profileId = multiOn ? multiPicks[0] : styleEl.value
+    const multiFields = multiActive ? { profileIds: multiPicks, multiMode } : {}
+    const passes = multiActive ? (multiMode === "order" ? multiPicks.length : 2) : 1
+    const isCustom = !multiOn && styleEl.value === "__custom__"
     const customText = isCustom ? customEl.value.trim() : ""
     if (isCustom && !customText) { setStatus(msgEl, "Enter a custom instruction.", true); return }
     if (!inputEl.value.trim()) { setStatus(msgEl, "Nothing to rewrite — input is empty.", true); return }
-    running = true; runBtn.textContent = "Cancel"; runBtn.setAttribute("aria-busy", "true"); setStatus(msgEl, "Rewriting…")
+    running = true; runBtn.setAttribute("aria-busy", "true"); syncActions(); updateDiffView(); setStatus(msgEl, "Rewriting…")
     if (runTimer) clearTimeout(runTimer)
     // rewrite_multi runs its segments SEQUENTIALLY, each with its own full backend timeout,
     // so budget the watchdog per segment — otherwise a multi-segment run trips it while the
@@ -1101,9 +1347,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     runTimer = setTimeout(() => {
       runTimer = null
       runRequestId = ""
-      running = false; runBtn.disabled = false; runBtn.textContent = "Run"; runBtn.removeAttribute("aria-busy")
+      running = false; runBtn.disabled = false; runBtn.removeAttribute("aria-busy"); syncActions()
       setStatus(msgEl, "Timed out waiting for a response. Try again.", true)
-    }, RUN_WATCHDOG_MS * segCount)
+    }, RUN_WATCHDOG_MS * segCount * passes)
     const active = ctx.getActiveChat()
     runRequestId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
     if (multiCapture) {
@@ -1111,7 +1357,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         type: "rewrite_multi",
         requestId: runRequestId,
         segments: multiCapture.segments.map((s) => ({ messageId: s.messageId, text: s.text, R: s.R, rs: s.rs, re: s.re })),
-        profileId: styleEl.value,
+        profileId,
+        ...multiFields,
         customPrompt: isCustom ? customText : undefined,
         concise: conciseEl.checked,
         connectionId: connEl.value,
@@ -1123,7 +1370,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       ctx.sendToBackend({
         type: "rewrite",
         requestId: runRequestId,
-        profileId: styleEl.value,
+        profileId,
+        ...multiFields,
         customPrompt: isCustom ? customText : undefined,
         text: inputEl.value,
         concise: conciseEl.checked,
@@ -1207,7 +1455,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         const cfg = m.config as RewriteConfig
         pendingConnId = cfg.connectionId
         if ([...connEl.options].some(o => o.value === pendingConnId)) connEl.value = pendingConnId
+        syncConnBadge()
         watchEl.checked = cfg.watch
+        multiMode = cfg.multiMode === "merged" ? "merged" : "order"
         conciseEl.checked = cfg.concise
         lenEl.value = String(Math.min(cfg.lengthPct, 200))
         lenValEl.value = String(cfg.lengthPct)
@@ -1227,15 +1477,17 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         const nextCustoms = JSON.stringify(cfg.customProfiles || [])
         const nextHidden = JSON.stringify(cfg.hiddenProfiles || [])
         const nextAutos = JSON.stringify(cfg.autoProfiles || {})
-        const profilesChanged = nextCustoms !== lastProfilesSig || nextHidden !== lastHiddenSig || nextAutos !== lastAutoSig
-        lastProfilesSig = nextCustoms; lastHiddenSig = nextHidden; lastAutoSig = nextAutos
+        const nextOrder = JSON.stringify(cfg.styleOrder || [])
+        const profilesChanged = nextCustoms !== lastProfilesSig || nextHidden !== lastHiddenSig || nextAutos !== lastAutoSig || nextOrder !== lastOrderSig
+        lastProfilesSig = nextCustoms; lastHiddenSig = nextHidden; lastAutoSig = nextAutos; lastOrderSig = nextOrder
+        styleOrderList = cfg.styleOrder || []
         customProfilesList = cfg.customProfiles || []
         hiddenProfilesList = cfg.hiddenProfiles || []
         autoProfilesMap = cfg.autoProfiles || {}
-        if (profilesChanged) { rebuildStyleOptions(); renderStyleMgmt() }
+        if (profilesChanged) { rebuildStyleOptions(); renderStyleMgmt() } else renderStyleChips()
         // Reflect the persisted cost-panel collapse state. Set the property directly to
         // avoid round-tripping the toggle handler back into update_config.
-        costEl.open = !cfg.costCollapsed
+        setDetails(!cfg.costCollapsed, false)
         // Restore diff toggle and apply its show/hide effect. Fields are non-optional in the
         // RewriteConfig type and always defaulted via DEFAULT_CONFIG merge in loadConfig.
         diffToggle.checked = cfg.showDiff
@@ -1250,13 +1502,29 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         freqPenEl.value = cfg.frequencyPenalty == null ? "" : String(cfg.frequencyPenalty)
         presPenEl.value = cfg.presencePenalty == null ? "" : String(cfg.presencePenalty)
         applyHelpersEl.checked = cfg.applyParamsToHelpers
+        syncSummaries()
+        renderEstimate()
         // Surface a persistence-failure signal from update_config / reset_config.
         if (m.persisted === false) setStatus(msgEl, "Settings could not be saved to disk — changes may not survive a restart.", true)
         // Refresh the estimate once after the initial sync if there's already input.
         if (inputEl.value.trim()) schedulePreview()
         break
       }
-      case "rewrite_result": endRun(); outputEl.value = m.text; resultPending = true; setStatus(msgEl, `Done.${m.tokens ? ` · prompt ~${m.tokens} tok` : ""}`); updateDiffView(); if (autoApplyEl.checked && capture) applyBtn.click(); break
+      case "rewrite_result": endRun(); outputEl.value = m.text; resultPending = true; setView(diffToggle.checked ? "diff" : "out"); setStatus(msgEl, `Done.${m.tokens ? ` · prompt ~${m.tokens} tok` : ""}`); updateDiffView(); if (autoApplyEl.checked && capture) applyBtn.click(); break
+      case "rewrite_chunk": {
+        if (!running) break
+        outputEl.value = m.text
+        if (view !== "out") setView("out")
+        outputEl.scrollTop = outputEl.scrollHeight
+        setStatus(msgEl, `${m.passes > 1 ? `Pass ${m.pass} of ${m.passes} · ${m.label} · ` : ""}Writing… ${wc(m.text)} word${wc(m.text) === 1 ? "" : "s"}`)
+        break
+      }
+      case "rewrite_stage": {
+        if (!running) break
+        if (m.stage === "merging") setStatus(msgEl, `Merging ${m.passes} styles into one prompt…`)
+        else setStatus(msgEl, `${m.segments ? `Message ${m.segment} of ${m.segments} · ` : ""}Pass ${m.pass} of ${m.passes} · ${m.label}…`)
+        break
+      }
       case "rewrite_multi_result": {
         endRun()
         if (multiCapture) {
@@ -1269,6 +1537,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           // outputEl.readOnly was already set true by doCapture when the multi-capture was
           // taken; nothing clears it between capture and result, so no need to reassert.
           resultPending = true
+          setView(diffToggle.checked ? "diff" : "out")
           const n = multiCapture.segments.filter((s) => s.output != null).length
           setStatus(msgEl, `Rewrote ${n} messages — Apply applies all.${m.tokens ? ` · prompt ~${m.tokens} tok` : ""}`)
           updateDiffView()
@@ -1281,7 +1550,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       // read-only with stale segment content and no way to edit or re-run without a reload.
       case "rewrite_error": endRun(); outputEl.readOnly = false; multiCapture = null; setStatus(msgEl, m.error, true); break
       case "rewrite_cancelled": endRun(); outputEl.readOnly = false; multiCapture = null; setStatus(msgEl, m.reason ?? "Cancelled."); break
-      case "apply_done": applyBtn.disabled = false; resultPending = false; undoBtn.disabled = !m.canUndo; redoBtn.disabled = !m.canRedo; setStatus(msgEl, "Applied to message ✓"); break
+      case "apply_done": applyBtn.disabled = false; resultPending = false; syncActions(); undoBtn.disabled = !m.canUndo; redoBtn.disabled = !m.canRedo; setStatus(msgEl, "Applied to message ✓"); break
       case "apply_multi_done": {
         applyBtn.disabled = false
         undoBtn.disabled = !m.canUndo
@@ -1290,17 +1559,18 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         multiCapture = null
         resultPending = false
         outputEl.readOnly = false
+        syncActions()
         break
       }
       // apply_error covers both single and multi failures (backend uses one variant). Fully
       // reset UI locks the same way apply_multi_done does, so Watch + output stay usable.
-      case "apply_error": applyBtn.disabled = false; resultPending = false; multiCapture = null; outputEl.readOnly = false; setStatus(msgEl, m.error, true); break
+      case "apply_error": applyBtn.disabled = false; resultPending = false; multiCapture = null; outputEl.readOnly = false; syncActions(); setStatus(msgEl, m.error, true); break
       case "undo_done": undoBtn.disabled = !m.canUndo; redoBtn.disabled = !m.canRedo; setStatus(msgEl, "Reverted ✓"); break
       case "undo_error": setStatus(msgEl, m.error, true); break
       case "redo_done": undoBtn.disabled = !m.canUndo; redoBtn.disabled = !m.canRedo; setStatus(msgEl, "Reapplied ✓"); break
       case "redo_error": setStatus(msgEl, m.error, true); break
       case "history": undoBtn.disabled = !m.canUndo; redoBtn.disabled = !m.canRedo; break
-      case "connections": populateConnections(m.connections); break
+      case "connections": populateConnections(m.connections); syncConnBadge(); break
       case "refine_result": clearAiWatchdog(refineBtn); refineBtn.disabled = false; refineBtn.innerHTML = aiBtn("Refine"); customEl.value = m.text; setStatus(msgEl, "Refined."); break
       case "refine_error": clearAiWatchdog(refineBtn); refineBtn.disabled = false; refineBtn.innerHTML = aiBtn("Refine"); setStatus(msgEl, m.error, true); break
       case "architect_result": clearAiWatchdog(architectBtn); architectBtn.disabled = false; architectBtn.innerHTML = aiBtn("AI generate style"); newProfName.value = m.name; newProfPrompt.value = m.prompt; setStatus(msgEl, "Style drafted — review and Add."); break
@@ -1338,17 +1608,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         break
       }
       case "token_estimate": {
-        costTotalEl.textContent = `≈ ${m.total} tokens`
-        costBodyEl.replaceChildren()
-        const addLine = (label: string, tokens: number) => {
-          const row = ctx.dom.createElement("div"); row.className = "rw-cost-line"
-          const l = ctx.dom.createElement("span"); l.textContent = label
-          const v = ctx.dom.createElement("span"); v.textContent = String(tokens)
-          row.appendChild(l); row.appendChild(v); costBodyEl.appendChild(row)
-        }
-        addLine("selection", m.selection)
-        for (const s of m.sources) addLine(s.label, s.tokens)
-        addLine("system", m.system)
+        lastEstimate = m
+        renderEstimate()
         break
       }
     }
@@ -1368,6 +1629,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     for (const t of aiWatchdogs.values()) clearTimeout(t)
     aiWatchdogs.clear()
     unsub()
+    clearInterval(fitTimer)
+    offActivate()
     removeStyle()
     ctx.dom.cleanup()
     tab.destroy()

@@ -290,6 +290,76 @@ async function assembleContext(
   return (await assembleContextBlocks(cfg, anchor, userId, prefetchedMsgs)).map((b) => b.text).join("\n\n")
 }
 
+// Which config switch governs each labeled context block (labels from assembleContextBlocks).
+const SOURCE_FLAG: Record<string, keyof RewriteConfig> = {
+  character: "useCharCard",
+  context: "usePrevMessages",
+  persona: "useUserPersona",
+  speaker: "speakerAware",
+  lore: "useLorebook",
+  memory: "useMemory",
+}
+function sourceEnabled(cfg: RewriteConfig, label: string): boolean {
+  const flag = SOURCE_FLAG[label]
+  return flag ? Boolean(cfg[flag]) : true
+}
+
+// The profiles a run applies, in order. Two or more ids is a multi-style run.
+function resolvePasses(cfg: RewriteConfig, msg: { profileId: string; customPrompt?: string; profileIds?: string[] }): Profile[] {
+  const ids = (msg.profileIds ?? []).filter((id) => typeof id === "string" && id && id !== "__custom__")
+  return ids.length > 1 ? ids.map((id) => resolveProfile(cfg, id)) : [resolveProfile(cfg, msg.profileId, msg.customPrompt)]
+}
+
+type GenMessages = { role: "system" | "user"; content: string }[]
+
+// One model call. With onText it streams and reports the text so far (throttled);
+// without it, one blocking call. Both honour the same abort signal.
+async function genText(
+  cfg: RewriteConfig,
+  userId: string,
+  connectionId: string,
+  messages: GenMessages,
+  signal: AbortSignal,
+  onText?: (text: string) => void,
+): Promise<string> {
+  const req = { type: "quiet" as const, userId, connection_id: connectionId, messages, parameters: buildParams(cfg), reasoning: { source: "off" as const }, signal }
+  if (!onText) {
+    const content = ((await spindle.generate.quiet(req)) as Record<string, unknown>)?.content
+    return typeof content === "string" ? content : ""
+  }
+  let acc = ""
+  let last = 0
+  for await (const chunk of spindle.generate.quietStream(req)) {
+    if (chunk.type === "token") {
+      acc += chunk.token
+      const t = Date.now()
+      if (t - last > 120) { last = t; onText(acc) }
+    } else if (chunk.type === "done") {
+      return typeof chunk.content === "string" && chunk.content ? chunk.content : acc
+    }
+  }
+  return acc
+}
+
+const MERGE_SYS = "You combine several rewrite instructions into ONE clear, imperative instruction that applies all of them to the same passage. Where they conflict, the earlier instruction wins. Output ONLY the combined instruction, no preamble or quotes."
+
+// "Merged" multi-style mode: one helper call turns the picked styles into a single instruction.
+async function mergeProfiles(cfg: RewriteConfig, userId: string, connectionId: string, profiles: Profile[], signal: AbortSignal): Promise<Profile> {
+  const list = profiles.map((p, i) => `${i + 1}. ${p.name}: ${p.prompt}`).join("\n")
+  const content = ((await spindle.generate.quiet({
+    type: "quiet",
+    userId,
+    connection_id: connectionId,
+    messages: [{ role: "system", content: MERGE_SYS }, { role: "user", content: list }],
+    parameters: cfg.applyParamsToHelpers ? buildParams(cfg) : { temperature: 0.3 },
+    reasoning: { source: "off" },
+    signal,
+  })) as Record<string, unknown>)?.content
+  const prompt = stripWrappingQuotes(typeof content === "string" ? content.trim() : "")
+  if (!prompt) throw new Error("Couldn't merge the styles: the model returned nothing.")
+  return { id: "merged", name: profiles.map((p) => p.name).join(" + "), order: -1, prompt }
+}
+
 spindle.onFrontendMessage((raw: unknown, userId: string) => {
   const msg = raw as FrontendMsg
   if (!HISTORY_OPS.has(msg.type)) return handleMessage(msg, userId)
@@ -341,12 +411,15 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
       try {
         const cfg = await loadConfig(userId)
         const profile = resolveProfile(cfg, msg.profileId, msg.customPrompt)
+        // Assemble every source, so the panel can show what a switched-off source would add.
+        const allOn: RewriteConfig = { ...cfg, usePrevMessages: true, useCharCard: true, useUserPersona: true, speakerAware: true, useMemory: true, useLorebook: true }
         const blocks = await assembleContextBlocks(
-          cfg,
+          allOn,
           { chatId: msg.chatId, messageId: msg.messageId, characterId: msg.characterId },
           userId,
         )
-        const context = blocks.map((b) => b.text).join("\n\n")
+        const onBlocks = blocks.filter((b) => sourceEnabled(cfg, b.label))
+        const context = onBlocks.map((b) => b.text).join("\n\n")
         const sys = sysPrompt(msg.concise)
         const userPrompt = buildUserPrompt(profile, msg.text, msg.lengthPct, context)
         // ponytail: ~N countMessages calls per preview; debounced on the frontend so it's fine.
@@ -356,10 +429,10 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
         )).total_tokens
         const system = (await spindle.tokens.countMessages([{ role: "system", content: sys }], { userId })).total_tokens
         const selection = (await spindle.tokens.countMessages([{ role: "user", content: msg.text }], { userId })).total_tokens
-        const sources: { label: string; tokens: number }[] = []
+        const sources: { label: string; tokens: number; on: boolean }[] = []
         for (const b of blocks) {
           const tokens = (await spindle.tokens.countMessages([{ role: "user", content: b.text }], { userId })).total_tokens
-          sources.push({ label: b.label, tokens })
+          sources.push({ label: b.label, tokens, on: sourceEnabled(cfg, b.label) })
         }
         send({ type: "token_estimate", total, system, selection, sources })
       } catch (err: any) {
@@ -371,7 +444,7 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
 
     case "rewrite": {
       // Hoisted so the catch below can tell a user cancel from a timeout (the ref is
-      // created inside the try).
+      // replaced by each model call inside the try).
       let cancelRef: { reason: () => string } | null = null
       let _debugCfg: RewriteConfig | null = null
       let _debugProfile = ""
@@ -388,8 +461,8 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
         }
         const cfg = await loadConfig(userId)
         _debugCfg = cfg
-        const profile = resolveProfile(cfg, msg.profileId, msg.customPrompt)
-        _debugProfile = profile.id
+        let profiles = resolvePasses(cfg, msg)
+        _debugProfile = profiles.map((p) => p.id).join("+")
 
         // Fetch the chat's messages ONCE — shared by context assembly and raw-slice
         // resolution. A fetch failure degrades gracefully: assembleContext falls back to
@@ -409,7 +482,7 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
           userId,
           chatMsgs,
         )
-        spindle.log.info(`rewrite: profile=${profile.id} context=${context.length}c`)
+        spindle.log.info(`rewrite: profile=${_debugProfile} context=${context.length}c`)
 
         // Feed the model the raw markdown slice (preserves formatting) when we can locate it;
         // otherwise degrade gracefully to the rendered text — never turn a working rewrite
@@ -420,47 +493,46 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
           if (target) modelInput = resolveRawInput(target.content, msg.R, msg.rs, msg.re, msg.text) ?? msg.text
         }
 
-        const messages = [
-          { role: "system" as const, content: sysPrompt(msg.concise) },
-          { role: "user" as const, content: buildUserPrompt(profile, modelInput, msg.lengthPct, context, msg.text) },
-        ]
-        let promptTokens = 0
-        try {
-          promptTokens = (await spindle.tokens.countMessages(messages, { userId })).total_tokens
-        } catch (e: any) {
-          spindle.log.warn(`token count skipped: ${e?.message}`)
+        _debugT0 = Date.now()
+        if (profiles.length > 1 && msg.multiMode === "merged") {
+          send({ type: "rewrite_stage", stage: "merging", passes: profiles.length })
+          const c = withUserCancel(userId); cancelRef = c
+          try { profiles = [await mergeProfiles(cfg, userId, msg.connectionId, profiles, c.signal)] } finally { c.done() }
         }
 
-        _debugPromptChars = messages[1].content.length
-        _debugT0 = Date.now()
-        const ac = new AbortController()
-        addAbort(userId, ac)
-        cancelRef = { reason: () => abortReason(ac, userId) }
-        let result: unknown
-        try {
-          result = await spindle.generate.quiet({
-            type: "quiet",
-            userId, // required for operator-scoped extensions (the requesting user)
-            connection_id: msg.connectionId,
-            messages,
-            parameters: buildParams(cfg),
-            reasoning: { source: "off" },
-            signal: AbortSignal.any([ac.signal, AbortSignal.timeout(llmTimeoutMs(userId))]),
-          })
-        } finally {
-          delAbort(userId, ac)
+        // One pass per profile; each later pass rewrites the previous pass's output. The
+        // length target always comes from the original selection so passes don't compound it.
+        let current = modelInput
+        let promptTokens = 0
+        for (let i = 0; i < profiles.length; i++) {
+          const p = profiles[i]
+          const passInfo = { pass: i + 1, passes: profiles.length, label: p.name }
+          if (profiles.length > 1) send({ type: "rewrite_stage", stage: "pass", ...passInfo })
+          const messages = [
+            { role: "system" as const, content: sysPrompt(msg.concise) },
+            { role: "user" as const, content: buildUserPrompt(p, current, msg.lengthPct, context, msg.text) },
+          ]
+          try {
+            promptTokens += (await spindle.tokens.countMessages(messages, { userId })).total_tokens
+          } catch (e: any) {
+            spindle.log.warn(`token count skipped: ${e?.message}`)
+          }
+          _debugPromptChars += messages[1].content.length
+          const c = withUserCancel(userId); cancelRef = c
+          let raw: string
+          try {
+            raw = (await genText(cfg, userId, msg.connectionId, messages, c.signal, (text) => send({ type: "rewrite_chunk", text, ...passInfo }))).trim()
+          } finally { c.done() }
+          // When the input was itself quote-wrapped, the model legitimately keeps those quotes.
+          const out = wasQuoteWrapped(current) ? raw : stripWrappingQuotes(raw)
+          if (!out) {
+            send({ type: "rewrite_error", error: profiles.length > 1 ? `Model returned an empty rewrite on pass ${i + 1} (${p.name}).` : "Model returned an empty rewrite." })
+            return
+          }
+          current = out
         }
-        const content = (result as Record<string, unknown>)?.content
-        const rawOut = typeof content === "string" ? content.trim() : ""
-        // When the input was itself quote-wrapped, the model legitimately keeps those quotes —
-        // don't strip them off the output.
-        const text = wasQuoteWrapped(modelInput) ? rawOut : stripWrappingQuotes(rawOut)
-        if (!text) {
-          send({ type: "rewrite_error", error: "Model returned an empty rewrite." })
-          break
-        }
-        if (cfg.debug) pushDebug({ ts: Date.now(), profile: profile.id, promptChars: _debugPromptChars, outputChars: text.length, tokens: promptTokens, ms: Date.now() - _debugT0 }, userId)
-        send({ type: "rewrite_result", text, tokens: promptTokens })
+        if (cfg.debug) pushDebug({ ts: Date.now(), profile: _debugProfile, promptChars: _debugPromptChars, outputChars: current.length, tokens: promptTokens, ms: Date.now() - _debugT0 }, userId)
+        send({ type: "rewrite_result", text: current, tokens: promptTokens })
       } catch (err: any) {
         if (err?.name === "AbortError") {
           send({ type: "rewrite_cancelled", reason: cancelRef?.reason() ?? "Cancelled." })
@@ -474,6 +546,7 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
     }
 
     case "rewrite_multi": {
+      let cancelRef: { reason: () => string } | null = null
       try {
         if (!msg.connectionId) {
           send({ type: "rewrite_error", error: "No model connection selected." })
@@ -484,8 +557,13 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
           break
         }
         const cfg = await loadConfig(userId)
-        // Resolve the profile ONCE — same resolution as the single `rewrite` case.
-        const profile = resolveProfile(cfg, msg.profileId, msg.customPrompt)
+        // Resolve the passes ONCE — same resolution as the single `rewrite` case.
+        let profiles = resolvePasses(cfg, msg)
+        if (profiles.length > 1 && msg.multiMode === "merged") {
+          send({ type: "rewrite_stage", stage: "merging", passes: profiles.length })
+          const c = withUserCancel(userId); cancelRef = c
+          try { profiles = [await mergeProfiles(cfg, userId, msg.connectionId, profiles, c.signal)] } finally { c.done() }
+        }
 
         // Fetch the chat's messages ONCE — every segment resolves its raw slice against
         // this same snapshot. A fetch failure degrades gracefully: each segment then
@@ -503,7 +581,8 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
         let totalPromptTokens = 0
         let cancelled = false
         let cancelReason = "Cancelled."
-        for (const seg of msg.segments) {
+        segments: for (let s = 0; s < msg.segments.length; s++) {
+          const seg = msg.segments[s]
           const context = await assembleContext(
             cfg,
             { chatId: msg.chatId, messageId: seg.messageId, characterId: msg.characterId },
@@ -511,45 +590,38 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
           )
           const target = chatMsgs.find((m) => m.id === seg.messageId)
           const segInput = target ? (resolveRawInput(target.content, seg.R, seg.rs, seg.re, seg.text) ?? seg.text) : seg.text
-          const messages = [
-            { role: "system" as const, content: sys },
-            { role: "user" as const, content: buildUserPrompt(profile, segInput, msg.lengthPct, context, seg.text) },
-          ]
-          try {
-            totalPromptTokens += (await spindle.tokens.countMessages(messages, { userId })).total_tokens
-          } catch (e: any) {
-            spindle.log.warn(`token count skipped: ${e?.message}`)
-          }
-          const ac = new AbortController()
-          addAbort(userId, ac)
-          let result: unknown
-          try {
-            result = await spindle.generate.quiet({
-              type: "quiet",
-              userId, // required for operator-scoped extensions (the requesting user)
-              connection_id: msg.connectionId,
-              messages,
-              parameters: buildParams(cfg),
-              reasoning: { source: "off" },
-              signal: AbortSignal.any([ac.signal, AbortSignal.timeout(llmTimeoutMs(userId))]),
-            })
-          } catch (segErr: any) {
-            delAbort(userId, ac)
-            if (segErr?.name === "AbortError") {
-              cancelled = true
-              cancelReason = abortReason(ac, userId)
-              break
+          let current = segInput
+          for (let i = 0; i < profiles.length; i++) {
+            const p = profiles[i]
+            send({ type: "rewrite_stage", stage: "pass", pass: i + 1, passes: profiles.length, label: p.name, segment: s + 1, segments: msg.segments.length })
+            const messages = [
+              { role: "system" as const, content: sys },
+              { role: "user" as const, content: buildUserPrompt(p, current, msg.lengthPct, context, seg.text) },
+            ]
+            try {
+              totalPromptTokens += (await spindle.tokens.countMessages(messages, { userId })).total_tokens
+            } catch (e: any) {
+              spindle.log.warn(`token count skipped: ${e?.message}`)
             }
-            throw segErr
-          } finally {
-            delAbort(userId, ac)
+            const c = withUserCancel(userId); cancelRef = c
+            let raw: string
+            try {
+              raw = (await genText(cfg, userId, msg.connectionId, messages, c.signal)).trim()
+            } catch (segErr: any) {
+              if (segErr?.name === "AbortError") {
+                cancelled = true
+                cancelReason = c.reason()
+                break segments
+              }
+              throw segErr
+            } finally { c.done() }
+            const text = wasQuoteWrapped(current) ? raw : stripWrappingQuotes(raw)
+            // An empty pass leaves this segment unchanged from here on; an empty first pass
+            // means no output for it, and apply_multi skips segments without one.
+            if (!text) { current = ""; break }
+            current = text
           }
-          const content = (result as Record<string, unknown>)?.content
-          const rawOut = typeof content === "string" ? content.trim() : ""
-          const text = wasQuoteWrapped(segInput) ? rawOut : stripWrappingQuotes(rawOut)
-          // Skip empty model outputs — apply_multi filters by output presence, so an empty
-          // segment simply won't be applied (never corrupts).
-          if (text) out.push({ messageId: seg.messageId, output: text })
+          if (current) out.push({ messageId: seg.messageId, output: current })
         }
         if (cancelled) {
           // Deliver already-completed segments so the user doesn't lose paid-for work when
@@ -567,7 +639,7 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
         send({ type: "rewrite_multi_result", segments: out, tokens: totalPromptTokens || undefined })
       } catch (err: any) {
         if (err?.name === "AbortError") {
-          send({ type: "rewrite_cancelled" })
+          send({ type: "rewrite_cancelled", reason: cancelRef?.reason() ?? "Cancelled." })
           break
         }
         spindle.log.error(`rewrite_multi failed: ${err?.message}`)

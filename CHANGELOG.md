@@ -4,6 +4,23 @@ All notable changes to this extension are documented here. The format is based o
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] — 2026-11-22
+
+A redesigned panel: one text card, a compact style grid, and streamed results.
+
+### Added
+- **Streaming.** Rewrites appear word by word as the model writes them (`spindle.generate.quietStream`), with a live word count.
+- **Multi-style runs.** **Multi** picks several styles; chips show the pick order. **In order** runs one pass per style, each on the last pass's output. **Merged** combines the styles into one instruction with a short helper call, then runs once. Works for multi-message selections too.
+- **Style grid controls.** Three rows show by default with **Show all**. **Edit** reorders styles by dragging and hides any style (built-in, your own, or the chat style) with the eye. Order and hidden styles are saved.
+- **Details** under the text card lists every context source with its switch and token cost; a switched-off source shows what it would add. Length moved here too.
+
+### Changed
+- **One text card** switches between **Original**, **Rewrite** and **Changes**, and fills the panel down to the Run button.
+- **One main button:** Run, Cancel while running, then Apply once a result for a captured selection is ready (Run again sits beside it).
+- **Connection** moved to Options; the Rewrite tab shows it as a badge that opens Options.
+- **Styles tab** replaces Architect: your styles, creating one, writing one with AI, and hiding built-ins.
+- **Options** are collapsible groups with one-line summaries. "Show diff" became "Open on Changes", which picks the view a finished run opens on.
+
 ## [1.3.0] — 2026-11-22
 
 Hardening for multi-user hosts, checked against Lumiverse 1.3.0.
