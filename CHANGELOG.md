@@ -14,6 +14,11 @@ A redesigned panel: one text card, a compact style grid, and streamed results.
 - **Style grid controls.** Three rows show by default with **Show all**. **Edit** reorders styles by dragging and hides any style (built-in, your own, or the chat style) with the eye. Order and hidden styles are saved.
 - **Details** under the text card lists every context source with its switch and token cost; a switched-off source shows what it would add. Length moved here too.
 
+### Fixed
+- **Point of view holds.** A first- or second-person passage now gets an explicit note to stay that way; small models were turning "I walked" into "He strolled", especially on your own messages.
+- **Changes works on large selections.** Long texts are aligned sentence by sentence, then diffed word by word, instead of falling back to plain text past ~500 words.
+- **Run updated.** After a run, the button reads Run again until you change the style, picks, context, length, connection or text; then it reads Run updated.
+
 ### Changed
 - **One text card** switches between **Original**, **Rewrite** and **Changes**, and fills the panel down to the Run button.
 - **One main button:** Run, Cancel while running, then Apply once a result for a captured selection is ready (Run again sits beside it).

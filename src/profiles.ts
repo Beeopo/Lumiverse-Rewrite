@@ -50,6 +50,23 @@ export function sysPrompt(concise: boolean): string {
   return concise ? REWRITE_SYS_CONCISE : REWRITE_SYS
 }
 
+// Grammatical person of the narration, ignoring quoted dialogue (a third-person passage can
+// quote someone saying "I"). Returns null for third person or when there's no clear signal.
+export function narrationPerson(text: string): "first" | "second" | null {
+  const narration = text.replace(/"[^"]*"|\u201c[^\u201d]*\u201d/g, " ")
+  const count = (re: RegExp) => (narration.match(re) || []).length
+  const first = count(/\b(I|me|my|mine|myself|we|us|our|ours|ourselves|I'm|I've|I'd|I'll)\b/g)
+  const second = count(/\b(you|your|yours|yourself|you're|you've|you'd|you'll)\b/gi)
+  if (first > 0 && first >= second) return "first"
+  if (second > 0) return "second"
+  return null
+}
+
+const POV_NOTE = {
+  first: 'Point of view: the passage is written in FIRST PERSON ("I"). Keep it first person — never change "I"/"me"/"my" into a name or "he"/"she".',
+  second: 'Point of view: the passage is written in SECOND PERSON ("you"). Keep it second person.',
+} as const
+
 export function buildUserPrompt(
   profile: Profile,
   selectedText: string,
@@ -62,6 +79,10 @@ export function buildUserPrompt(
   let out = ""
   if (context && context.trim()) out += `${context.trim()}\n\n`
   out += `Instruction: ${profile.prompt}\n\n<rewrite_this>\n${selectedText}\n</rewrite_this>`
+  // Small models drift into third person when persona/character blocks sit nearby; a
+  // specific reminder right after the passage holds the original person.
+  const person = narrationPerson(origText ?? selectedText)
+  if (person) out += `\n\n${POV_NOTE[person]}`
   if (typeof lengthPct === "number" && lengthPct !== 100) {
     const origWords = ((origText ?? selectedText).trim().match(/\S+/g) || []).length
     let lengthNote: string

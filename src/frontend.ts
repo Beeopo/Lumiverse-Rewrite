@@ -4,6 +4,7 @@ import type { RewriteConfig, BackendMsg, DebugEntry } from "./types"
 import { sanitizeImport } from "./settings-io"
 import { wc } from "./wc"
 import { orderByIds, moveBefore } from "./style-order"
+import { computeDiff } from "./diff"
 
 interface Capture {
   chatId: string
@@ -181,33 +182,9 @@ function liveRenderedFor(messageId: string): string | null {
 // whenever a config arrives so the two never fight.
 let RUN_WATCHDOG_MS = 125_000
 
-// ── Word-level diff (ported from the original) ──
-const DIFF_TOKEN_CAP = 500
-function computeWordDiff(oldStr: string, newStr: string): Array<{ t: string; v: string }> | null {
-  let oldToks = oldStr.split(/(\s+)/)
-  let newToks = newStr.split(/(\s+)/)
-  if (oldToks.length > DIFF_TOKEN_CAP * 2) oldToks = oldToks.slice(0, DIFF_TOKEN_CAP * 2)
-  if (newToks.length > DIFF_TOKEN_CAP * 2) newToks = newToks.slice(0, DIFF_TOKEN_CAP * 2)
-  const m = oldToks.length, n = newToks.length
-  if (m * n > DIFF_TOKEN_CAP * DIFF_TOKEN_CAP) return null
-  const dp: Int32Array[] = []
-  for (let i = 0; i <= m; i++) dp.push(new Int32Array(n + 1))
-  for (let i = 1; i <= m; i++)
-    for (let j = 1; j <= n; j++)
-      dp[i][j] = oldToks[i - 1] === newToks[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1])
-  const ops: Array<{ t: string; v: string }> = []
-  let i = m, j = n
-  while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && oldToks[i - 1] === newToks[j - 1]) { ops.unshift({ t: "eq", v: oldToks[i - 1] }); i--; j-- }
-    else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) { ops.unshift({ t: "ins", v: newToks[j - 1] }); j-- }
-    else { ops.unshift({ t: "del", v: oldToks[i - 1] }); i-- }
-  }
-  return ops
-}
 function renderDiff(el: HTMLElement, oldStr: string, newStr: string) {
-  const ops = computeWordDiff(oldStr, newStr)
+  const ops = computeDiff(oldStr, newStr)
   el.replaceChildren()
-  if (!ops) { el.textContent = newStr; return }
   for (const op of ops) {
     if (op.t === "eq") el.appendChild(document.createTextNode(op.v))
     else {
@@ -754,6 +731,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const n = multiPicks.length
     multiHintEl.textContent = n < 2 ? "Pick two or more styles" : multiMode === "order" ? `${n} passes, each on the last one's output` : `${n} styles merged into one prompt`
     customWrap.style.display = !multiOn && styleEl.value === "__custom__" ? "flex" : "none"
+    syncActions()
   }
 
   let customProfilesList: { id: string; name: string; prompt: string }[] = []
@@ -766,6 +744,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let multiMode: "order" | "merged" = "order"
   let view: "in" | "out" | "diff" = "in"
   let lastEstimate: Extract<BackendMsg, { type: "token_estimate" }> | null = null
+  // What the last run used; compared with the current choices to label the Run button.
+  let lastRunSig = ""
   let hiddenProfilesList: string[] = []
   let autoProfilesMap: Record<string, { name: string; prompt: string }> = {}
   let pendingConnId = ""
@@ -1058,7 +1038,16 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     applyBtn.style.display = showApply ? "" : "none"
     runBtn.classList.toggle("primary", !showApply)
     runBtn.classList.toggle("run", !showApply)
-    runBtn.textContent = running ? "Cancel" : showApply ? "Run again" : "Run"
+    const hasResult = !!lastRunSig && !!outputEl.value.trim()
+    runBtn.textContent = running ? "Cancel" : !hasResult ? "Run" : runSig() === lastRunSig ? "Run again" : "Run updated"
+  }
+  function runSig(): string {
+    return JSON.stringify([
+      multiOn ? multiPicks : styleEl.value, multiOn ? multiMode : "",
+      styleEl.value === "__custom__" ? customEl.value : "",
+      lenValEl.value, conciseEl.checked, Object.values(CTX_BOXES).map((b) => b.checked),
+      connEl.value, inputEl.value,
+    ])
   }
   const CTX_BOXES: Record<string, HTMLInputElement> = { context: ctxPrev, character: ctxChar, persona: ctxPersona, speaker: ctxSpeaker, memory: ctxMemory, lore: ctxLore }
   // Details rows: each source's switch with what it costs; a switched-off source shows what it would add.
@@ -1274,6 +1263,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   diffToggle.addEventListener("change", () => {
     ctx.sendToBackend({ type: "update_config", config: { showDiff: diffToggle.checked } })
   })
+  root.addEventListener("change", () => syncActions())
+  root.addEventListener("input", () => syncActions())
   viewInBtn.addEventListener("click", () => setView("in"))
   viewOutBtn.addEventListener("click", () => setView("out"))
   viewDiffBtn.addEventListener("click", () => setView("diff"))
@@ -1338,6 +1329,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const customText = isCustom ? customEl.value.trim() : ""
     if (isCustom && !customText) { setStatus(msgEl, "Enter a custom instruction.", true); return }
     if (!inputEl.value.trim()) { setStatus(msgEl, "Nothing to rewrite — input is empty.", true); return }
+    lastRunSig = runSig()
     running = true; runBtn.setAttribute("aria-busy", "true"); syncActions(); updateDiffView(); setStatus(msgEl, "Rewriting…")
     if (runTimer) clearTimeout(runTimer)
     // rewrite_multi runs its segments SEQUENTIALLY, each with its own full backend timeout,

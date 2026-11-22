@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test"
-import { DEF_PROFILES, findProfile, sysPrompt, buildUserPrompt } from "./profiles"
+import { DEF_PROFILES, findProfile, sysPrompt, buildUserPrompt, narrationPerson } from "./profiles"
 
 test("ships 13 ordered profiles with unique ids", () => {
   expect(DEF_PROFILES.length).toBe(13)
@@ -94,4 +94,17 @@ test("buildUserPrompt uses origText's word count for the length note, not select
 test("buildUserPrompt omits empty context", () => {
   const p = findProfile("expand")!
   expect(buildUserPrompt(p, "x", undefined, "   ").startsWith("Instruction:")).toBe(true)
+})
+
+test("narrationPerson reads the narration, not quoted dialogue", () => {
+  expect(narrationPerson("I walked up the road and sighed")).toBe("first")
+  expect(narrationPerson('He said, "I am tired," and sat down.')).toBe(null)
+  expect(narrationPerson("You open the door. Your hands shake.")).toBe("second")
+  expect(narrationPerson("She walked up the road.")).toBe(null)
+})
+
+test("buildUserPrompt adds a point-of-view note for first-person passages", () => {
+  const p = { id: "x", name: "X", order: 0, prompt: "Expand." }
+  expect(buildUserPrompt(p, "I walked up the road and sighed")).toContain("FIRST PERSON")
+  expect(buildUserPrompt(p, "She walked up the road.")).not.toContain("Point of view")
 })
