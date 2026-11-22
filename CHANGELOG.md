@@ -13,7 +13,8 @@ A redesigned panel: one text card, a compact style grid, and streamed results.
 - **Multi-style runs.** **Multi** picks several styles; chips show the pick order. **In order** runs one pass per style, each on the last pass's output. **Merged** combines the styles into one instruction with a short helper call, then runs once. Works for multi-message selections too.
 - **Style grid controls.** Three rows show by default with **Show all**. **Edit** reorders styles by dragging and hides any style (built-in, your own, or the chat style) with the eye. Order and hidden styles are saved.
 - **Progress on the Run button.** While a run is going, the Cancel button fills from left to right: one step per pass (and per message for multi-message selections), plus the merge call in Merged mode, and it fills within a pass as text streams in.
-- **Details** under the text card lists every context source with its switch and token cost; a switched-off source shows what it would add. Length moved here too.
+- **Length slider under the text card:** Compress on the left (down to 25%), 100% at the centre with a small snap, Expand on the right (up to 400%). The number box still takes exact values from 1 to 1000%.
+- **Details** under the text card lists every context source with its switch and token cost; a switched-off source shows what it would add.
 
 ### Fixed
 - **Point of view holds.** A first- or second-person passage now gets an explicit note to stay that way; small models were turning "I walked" into "He strolled", especially on your own messages.

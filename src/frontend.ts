@@ -5,6 +5,7 @@ import { sanitizeImport } from "./settings-io"
 import { wc } from "./wc"
 import { orderByIds, moveBefore } from "./style-order"
 import { computeDiff } from "./diff"
+import { pctToPos, posToPct } from "./length-scale"
 
 interface Capture {
   chatId: string
@@ -249,7 +250,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     .rw-tog-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px 14px; }
 
     /* ── Length row ── */
-    .rw-len-row { display: flex; align-items: center; gap: 11px; }
+    .rw-len-row { display: flex; align-items: center; gap: 8px; }
+    .rw-len-row .rw-num { width: 54px; }
     .rw-len-row input[type=range] { flex: 1; min-width: 70px; accent-color: var(--rw-accent); height: 4px; cursor: pointer; }
 
     /* ── Status lines ── */
@@ -427,14 +429,16 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         <div id="rw-diff" class="rw-cardtext rw-diff" style="display:none;"></div>
       </div>
       <div class="rw-status" id="rw-cap" role="status" aria-live="polite" aria-atomic="true"></div>
+      <div class="rw-len-row">
+        <span class="rw-label">Compress</span>
+        <input type="range" id="rw-len" min="0" max="100" step="1" value="50" list="rw-len-ticks" aria-label="Target length: compress or expand" />
+        <span class="rw-label">Expand</span>
+        <input type="number" id="rw-lenval" min="1" max="1000" value="100" class="rw-input rw-num" title="Target length % (1–1000; 100 keeps the length)" aria-label="Target length percent" />
+        <datalist id="rw-len-ticks"><option value="50"></option></datalist>
+      </div>
 
       <div class="rw-meta"><span class="rw-cost-total" id="rw-cost-total">Context · ≈ 0 tok</span><span class="rw-grow"></span><button class="rw-lnk" type="button" id="rw-details-btn" aria-expanded="false" aria-controls="rw-details">Details</button></div>
       <div class="rw-details" id="rw-details" hidden>
-        <div class="rw-len-row">
-          <span class="rw-label" id="rw-len-label">Length</span>
-          <input type="range" id="rw-len" min="25" max="200" step="5" value="100" aria-label="Length percent" />
-          <input type="number" id="rw-lenval" min="1" max="1000" value="100" class="rw-input rw-num" title="Target length % (1–1000)" aria-label="Length percent" />
-        </div>
         <div class="rw-crow rw-fixed"><span>System prompt</span><span class="rw-n" id="rw-tok-system">—</span></div>
         <div class="rw-crow rw-fixed"><span>Selection</span><span class="rw-n" id="rw-tok-selection">—</span></div>
         <label class="rw-crow rw-tog"><input type="checkbox" id="rw-ctx-prev" /><span class="rw-tog-sl"></span><span class="rw-grow">Previous messages</span><span class="rw-n" id="rw-tok-context">—</span></label>
@@ -1206,14 +1210,18 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   document.addEventListener("keydown", onKeyDown)
 
   // ── Controls ──
-  lenEl.addEventListener("input", () => { lenValEl.value = lenEl.value })
-  lenEl.addEventListener("change", () => { ctx.sendToBackend({ type: "update_config", config: { lengthPct: parseInt(lenEl.value, 10) } }); schedulePreview() })
+  lenEl.addEventListener("input", () => { lenValEl.value = String(posToPct(Number(lenEl.value))) })
+  lenEl.addEventListener("change", () => {
+    const pct = posToPct(Number(lenEl.value))
+    lenValEl.value = String(pct); lenEl.value = String(pctToPos(pct))
+    ctx.sendToBackend({ type: "update_config", config: { lengthPct: pct } }); schedulePreview()
+  })
   lenValEl.addEventListener("change", () => {
     let v = parseInt(lenValEl.value, 10)
     if (!Number.isFinite(v)) v = 100
     v = Math.max(1, Math.min(1000, v))
     lenValEl.value = String(v)
-    lenEl.value = String(Math.min(v, 200))
+    lenEl.value = String(pctToPos(v))
     ctx.sendToBackend({ type: "update_config", config: { lengthPct: v } })
     schedulePreview()
   })
@@ -1470,7 +1478,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         watchEl.checked = cfg.watch
         multiMode = cfg.multiMode === "merged" ? "merged" : "order"
         conciseEl.checked = cfg.concise
-        lenEl.value = String(Math.min(cfg.lengthPct, 200))
+        lenEl.value = String(pctToPos(cfg.lengthPct))
         lenValEl.value = String(cfg.lengthPct)
         autoApplyEl.checked = cfg.autoApply
         debugEl.checked = cfg.debug
