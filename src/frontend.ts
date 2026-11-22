@@ -614,6 +614,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let pendingConnId = ""
   let lastConfig: RewriteConfig | null = null
   let running = false
+  // Id of the run whose result we still accept; cleared by the watchdog so a late reply is dropped.
+  let runRequestId = ""
   // True while a rewrite result is shown but not yet applied — freezes Watch auto-capture so a
   // stray selection can't swap the apply target out from under a pending (especially multi) result.
   let resultPending = false
@@ -1098,13 +1100,16 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const segCount = multiCapture ? Math.max(1, multiCapture.segments.length) : 1
     runTimer = setTimeout(() => {
       runTimer = null
+      runRequestId = ""
       running = false; runBtn.disabled = false; runBtn.textContent = "Run"; runBtn.removeAttribute("aria-busy")
       setStatus(msgEl, "Timed out waiting for a response. Try again.", true)
     }, RUN_WATCHDOG_MS * segCount)
     const active = ctx.getActiveChat()
+    runRequestId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
     if (multiCapture) {
       ctx.sendToBackend({
         type: "rewrite_multi",
+        requestId: runRequestId,
         segments: multiCapture.segments.map((s) => ({ messageId: s.messageId, text: s.text, R: s.R, rs: s.rs, re: s.re })),
         profileId: styleEl.value,
         customPrompt: isCustom ? customText : undefined,
@@ -1117,6 +1122,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     } else {
       ctx.sendToBackend({
         type: "rewrite",
+        requestId: runRequestId,
         profileId: styleEl.value,
         customPrompt: isCustom ? customText : undefined,
         text: inputEl.value,
@@ -1193,6 +1199,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   // ── Backend responses ──
   const unsub = ctx.onBackendMessage((raw: unknown) => {
     const m = raw as BackendMsg
+    // A reply for another tab's run, or for a run the watchdog already gave up on.
+    if ("requestId" in m && m.requestId && m.requestId !== runRequestId) return
     switch (m.type) {
       case "config": {
         lastConfig = m.config as RewriteConfig

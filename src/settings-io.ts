@@ -103,3 +103,25 @@ export function sanitizeImport(raw: unknown): Partial<RewriteConfig> {
 
   return out
 }
+
+// Backend validation for stored and incoming config: everything sanitizeImport checks,
+// plus the machine-local keys an import deliberately skips. Never throws.
+export function sanitizeConfig(raw: unknown): Partial<RewriteConfig> {
+  const out = sanitizeImport(raw)
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return out
+  const obj = raw as Record<string, unknown>
+  if (typeof obj.connectionId === "string") out.connectionId = obj.connectionId
+  for (const key of ["watch", "debug", "costCollapsed"] as const) {
+    if (typeof obj[key] === "boolean") out[key] = obj[key] as boolean
+  }
+  const ap = obj.autoProfiles
+  if (ap !== null && typeof ap === "object" && !Array.isArray(ap)) {
+    const clean: RewriteConfig["autoProfiles"] = {}
+    for (const [chatId, v] of Object.entries(ap as Record<string, unknown>)) {
+      const r = v as Record<string, unknown> | null
+      if (r && typeof r.name === "string" && typeof r.prompt === "string") clean[chatId] = { name: r.name, prompt: r.prompt }
+    }
+    out.autoProfiles = clean
+  }
+  return out
+}

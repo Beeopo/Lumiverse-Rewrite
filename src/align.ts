@@ -137,6 +137,8 @@ function normForAnchor(s: string): string {
 export function mapRenderedSpanToRaw(R: string, A: string, rs: number, re: number): { as: number; ae: number } | null {
   const n = R.length, m = A.length;
   if (!n || !m) return null;
+  // rs/re arrive from the frontend; NaN or fractions would slip past the range checks.
+  if (!Number.isInteger(rs) || !Number.isInteger(re)) return null;
   if (rs < 0 || re > n || re < rs) return null;
   // Full-message selection: the whole rendered content maps to the whole raw content
   // by definition, no LCS needed. Skip the exact/windowed paths so oversized messages

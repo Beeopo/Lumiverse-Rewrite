@@ -4,18 +4,20 @@ import { sysPrompt, buildUserPrompt, findProfile, type Profile } from "./profile
 import { spliceRewrite, resolveRawInput } from "./align"
 import { DEFAULT_CONFIG, type RewriteConfig, type FrontendMsg, type DebugEntry, buildParams } from "./types"
 import { stripWrappingQuotes, wasQuoteWrapped } from "./quotes"
+import { sanitizeConfig } from "./settings-io"
 
 const CONFIG_FILE = "config.json"
 // Read at call time from the (already-warm) config cache so a settings change takes effect
 // without restarting the worker; falls back to the default before the first load.
 // Clamped at the use site (same convention as histCap): update_config writes straight into
 // the cache without validation, and AbortSignal.timeout(0 | NaN) would kill every call.
-const llmTimeoutMs = () => {
-  const s = configCache?.timeoutSec
+const llmTimeoutMs = (userId: string | undefined) => {
+  const s = configCache.get(userId || "")?.timeoutSec
   return (Number.isFinite(s) ? Math.max(10, Math.min(600, s as number)) : DEFAULT_CONFIG.timeoutSec) * 1000
 }
 
-let configCache: RewriteConfig | null = null
+// Per-user config cache, keyed by userId ("" when the host gives none).
+const configCache = new Map<string, RewriteConfig>()
 
 const autoInFlight = new Set<string>()
 // Per-user abort registries. A cancel from user A must NOT abort user B's rewrites on
@@ -43,19 +45,19 @@ function withUserCancel(userId: string | undefined): { signal: AbortSignal; done
   const ac = new AbortController()
   addAbort(userId, ac)
   return {
-    signal: AbortSignal.any([ac.signal, AbortSignal.timeout(llmTimeoutMs())]),
+    signal: AbortSignal.any([ac.signal, AbortSignal.timeout(llmTimeoutMs(userId))]),
     done: () => delAbort(userId, ac),
-    reason: () => abortReason(ac),
+    reason: () => abortReason(ac, userId),
   }
 }
 // Both a user cancel and the timeout surface as the same AbortError, so the two used to be
 // reported identically ("Cancelled."). Now that the timeout is user-configurable people will
 // set it low, and a silent "Cancelled." for a deadline they chose is actively misleading —
 // an untouched user controller means the timeout won the race.
-function abortReason(ac: AbortController): string {
+function abortReason(ac: AbortController, userId: string | undefined): string {
   return ac.signal.aborted
     ? "Cancelled."
-    : `Timed out after ${Math.round(llmTimeoutMs() / 1000)}s — raise Timeout in Options.`
+    : `Timed out after ${Math.round(llmTimeoutMs(userId) / 1000)}s — raise Timeout in Options.`
 }
 
 // ── Debug ring buffer ───────────────────────────────────────────────────────
@@ -66,14 +68,29 @@ function pushDebug(e: DebugEntry, userId: string | undefined) {
   if (debugLog.length > DEBUG_MAX) debugLog.shift()
 }
 
-async function loadConfig(): Promise<RewriteConfig> {
-  if (!configCache) {
-    // Merge over defaults so a config persisted before new fields existed still
-    // gets sane values for them (forward-compatible migration).
-    const stored = await spindle.storage.getJson<Partial<RewriteConfig>>(CONFIG_FILE, { fallback: {} })
-    configCache = { ...DEFAULT_CONFIG, ...stored }
+// Per-user files live in spindle.userStorage. Before 1.3 everything was in the shared
+// spindle.storage, so a user with no per-user file yet reads the legacy shared one.
+async function readUserJson<T>(file: string, userId: string | undefined, fallback: T): Promise<T> {
+  if (await spindle.userStorage.exists(file, userId || undefined)) {
+    return await spindle.userStorage.getJson<T>(file, { fallback, userId: userId || undefined })
   }
-  return configCache
+  return await spindle.storage.getJson<T>(file, { fallback })
+}
+
+async function loadConfig(userId: string | undefined): Promise<RewriteConfig> {
+  const key = userId || ""
+  let cfg = configCache.get(key)
+  if (!cfg) {
+    // Merge sanitized values over defaults: new fields get defaults, wrong-typed ones are dropped.
+    const stored = await readUserJson<unknown>(CONFIG_FILE, userId, {})
+    cfg = { ...DEFAULT_CONFIG, ...sanitizeConfig(stored) }
+    configCache.set(key, cfg)
+  }
+  return cfg
+}
+async function saveConfig(userId: string | undefined, cfg: RewriteConfig): Promise<void> {
+  await spindle.userStorage.setJson(CONFIG_FILE, cfg, { userId: userId || undefined })
+  configCache.set(userId || "", cfg)
 }
 
 // Global undo/redo history (across all messages, in apply order) — matches the original's
@@ -87,12 +104,18 @@ const HISTORY_FILE = "history.json"
 interface HistEntry { chatId: string; messageId: string; prev: string; applied: string; userId?: string }
 interface History { undo: HistEntry[]; redo: HistEntry[] }
 
-async function loadHistory(): Promise<History> {
-  return await spindle.storage.getJson<History>(HISTORY_FILE, { fallback: { undo: [], redo: [] } })
+async function loadHistory(userId: string | undefined): Promise<History> {
+  const h = await readUserJson<History>(HISTORY_FILE, userId, { undo: [], redo: [] })
+  // The legacy shared file holds every user's entries; keep only the caller's.
+  return { undo: h.undo.filter((e) => ownsEntry(e, userId)), redo: h.redo.filter((e) => ownsEntry(e, userId)) }
 }
-async function saveHistory(h: History): Promise<void> {
-  await spindle.storage.setJson(HISTORY_FILE, h)
+async function saveHistory(userId: string | undefined, h: History): Promise<void> {
+  await spindle.userStorage.setJson(HISTORY_FILE, h, { userId: userId || undefined })
 }
+// History ops are read-modify-write; run them one at a time per user so two quick
+// applies/undos can't drop each other's entries.
+const histLocks = new Map<string, Promise<unknown>>()
+const HISTORY_OPS = new Set(["apply", "apply_multi", "undo", "redo", "reset_config"])
 // Owner test — empty tag matches empty tag (pre-userId entries share ownership with an
 // unauthenticated caller). Prevents user A's Undo from reverting user B's rewrite.
 function ownsEntry(e: HistEntry, userId: string | undefined): boolean {
@@ -267,44 +290,56 @@ async function assembleContext(
   return (await assembleContextBlocks(cfg, anchor, userId, prefetchedMsgs)).map((b) => b.text).join("\n\n")
 }
 
-spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
+spindle.onFrontendMessage((raw: unknown, userId: string) => {
   const msg = raw as FrontendMsg
+  if (!HISTORY_OPS.has(msg.type)) return handleMessage(msg, userId)
+  const key = userId || ""
+  const run = () => handleMessage(msg, userId)
+  const next = (histLocks.get(key) ?? Promise.resolve()).then(run, run)
+  histLocks.set(key, next.catch(() => {}))
+  return next
+})
+
+async function handleMessage(msg: FrontendMsg, userId: string) {
+  // Always target the requesting user: an operator-scoped install broadcasts untargeted
+  // sends to every connected user. Echo requestId so the frontend can drop stale results.
+  const requestId = "requestId" in msg ? msg.requestId : undefined
+  const send = (m: Record<string, unknown>) => spindle.sendToFrontend(requestId ? { ...m, requestId } : m, userId)
   switch (msg.type) {
     case "get_config": {
       try {
-        spindle.sendToFrontend({ type: "config", config: await loadConfig() })
+        send({ type: "config", config: await loadConfig(userId) })
       } catch (err: any) {
         spindle.log.error(`get_config failed: ${err?.message}`)
-        spindle.sendToFrontend({ type: "config", config: DEFAULT_CONFIG })
+        send({ type: "config", config: DEFAULT_CONFIG })
       }
       break
     }
 
     case "update_config": {
-      const next = { ...(await loadConfig()), ...msg.config }
+      const next = { ...(await loadConfig(userId)), ...sanitizeConfig(msg.config) }
       let persisted = true
       try {
-        await spindle.storage.setJson(CONFIG_FILE, next)
+        await saveConfig(userId, next)
       } catch (err: any) {
         persisted = false
         spindle.log.error(`update_config persist failed: ${err?.message}`)
       }
-      // Only update the in-memory cache once persistence succeeded — otherwise a next-session
-      // reload silently reverts to disk without any signal to the user.
-      if (persisted) configCache = next
+      // saveConfig updates the cache only after the write succeeds, so a failed save
+      // can't leave memory and disk disagreeing.
       // Always reply so the UI never hangs, even if persistence failed. persisted:false lets
       // the frontend surface a "settings not saved" warning.
-      spindle.sendToFrontend({ type: "config", config: next, persisted })
+      send({ type: "config", config: next, persisted })
       break
     }
 
     case "preview_tokens": {
       if (!msg.text.trim()) {
-        spindle.sendToFrontend({ type: "token_estimate", total: 0, system: 0, selection: 0, sources: [] })
+        send({ type: "token_estimate", total: 0, system: 0, selection: 0, sources: [] })
         break
       }
       try {
-        const cfg = await loadConfig()
+        const cfg = await loadConfig(userId)
         const profile = resolveProfile(cfg, msg.profileId, msg.customPrompt)
         const blocks = await assembleContextBlocks(
           cfg,
@@ -326,10 +361,10 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
           const tokens = (await spindle.tokens.countMessages([{ role: "user", content: b.text }], { userId })).total_tokens
           sources.push({ label: b.label, tokens })
         }
-        spindle.sendToFrontend({ type: "token_estimate", total, system, selection, sources })
+        send({ type: "token_estimate", total, system, selection, sources })
       } catch (err: any) {
         spindle.log.warn(`preview_tokens failed: ${err?.message}`)
-        spindle.sendToFrontend({ type: "token_estimate", total: 0, system: 0, selection: 0, sources: [] })
+        send({ type: "token_estimate", total: 0, system: 0, selection: 0, sources: [] })
       }
       break
     }
@@ -344,14 +379,14 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
       let _debugT0 = 0
       try {
         if (!msg.connectionId) {
-          spindle.sendToFrontend({ type: "rewrite_error", error: "No model connection selected." })
+          send({ type: "rewrite_error", error: "No model connection selected." })
           break
         }
         if (!msg.text.trim()) {
-          spindle.sendToFrontend({ type: "rewrite_error", error: "Nothing to rewrite — the input is empty." })
+          send({ type: "rewrite_error", error: "Nothing to rewrite — the input is empty." })
           break
         }
-        const cfg = await loadConfig()
+        const cfg = await loadConfig(userId)
         _debugCfg = cfg
         const profile = resolveProfile(cfg, msg.profileId, msg.customPrompt)
         _debugProfile = profile.id
@@ -400,7 +435,7 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
         _debugT0 = Date.now()
         const ac = new AbortController()
         addAbort(userId, ac)
-        cancelRef = { reason: () => abortReason(ac) }
+        cancelRef = { reason: () => abortReason(ac, userId) }
         let result: unknown
         try {
           result = await spindle.generate.quiet({
@@ -410,7 +445,7 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
             messages,
             parameters: buildParams(cfg),
             reasoning: { source: "off" },
-            signal: AbortSignal.any([ac.signal, AbortSignal.timeout(llmTimeoutMs())]),
+            signal: AbortSignal.any([ac.signal, AbortSignal.timeout(llmTimeoutMs(userId))]),
           })
         } finally {
           delAbort(userId, ac)
@@ -421,19 +456,19 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
         // don't strip them off the output.
         const text = wasQuoteWrapped(modelInput) ? rawOut : stripWrappingQuotes(rawOut)
         if (!text) {
-          spindle.sendToFrontend({ type: "rewrite_error", error: "Model returned an empty rewrite." })
+          send({ type: "rewrite_error", error: "Model returned an empty rewrite." })
           break
         }
         if (cfg.debug) pushDebug({ ts: Date.now(), profile: profile.id, promptChars: _debugPromptChars, outputChars: text.length, tokens: promptTokens, ms: Date.now() - _debugT0 }, userId)
-        spindle.sendToFrontend({ type: "rewrite_result", text, tokens: promptTokens })
+        send({ type: "rewrite_result", text, tokens: promptTokens })
       } catch (err: any) {
         if (err?.name === "AbortError") {
-          spindle.sendToFrontend({ type: "rewrite_cancelled", reason: cancelRef?.reason() ?? "Cancelled." })
+          send({ type: "rewrite_cancelled", reason: cancelRef?.reason() ?? "Cancelled." })
           break
         }
         spindle.log.error(`rewrite failed: ${err?.message}`)
         if (_debugCfg?.debug && _debugT0) pushDebug({ ts: Date.now(), profile: _debugProfile, promptChars: _debugPromptChars, outputChars: 0, tokens: 0, ms: Date.now() - _debugT0, error: err?.message }, userId)
-        spindle.sendToFrontend({ type: "rewrite_error", error: String(err?.message ?? err) })
+        send({ type: "rewrite_error", error: String(err?.message ?? err) })
       }
       break
     }
@@ -441,14 +476,14 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
     case "rewrite_multi": {
       try {
         if (!msg.connectionId) {
-          spindle.sendToFrontend({ type: "rewrite_error", error: "No model connection selected." })
+          send({ type: "rewrite_error", error: "No model connection selected." })
           break
         }
         if (!msg.segments?.length) {
-          spindle.sendToFrontend({ type: "rewrite_error", error: "Nothing to rewrite — no segments." })
+          send({ type: "rewrite_error", error: "Nothing to rewrite — no segments." })
           break
         }
-        const cfg = await loadConfig()
+        const cfg = await loadConfig(userId)
         // Resolve the profile ONCE — same resolution as the single `rewrite` case.
         const profile = resolveProfile(cfg, msg.profileId, msg.customPrompt)
 
@@ -496,13 +531,13 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
               messages,
               parameters: buildParams(cfg),
               reasoning: { source: "off" },
-              signal: AbortSignal.any([ac.signal, AbortSignal.timeout(llmTimeoutMs())]),
+              signal: AbortSignal.any([ac.signal, AbortSignal.timeout(llmTimeoutMs(userId))]),
             })
           } catch (segErr: any) {
             delAbort(userId, ac)
             if (segErr?.name === "AbortError") {
               cancelled = true
-              cancelReason = abortReason(ac)
+              cancelReason = abortReason(ac, userId)
               break
             }
             throw segErr
@@ -520,23 +555,23 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
           // Deliver already-completed segments so the user doesn't lose paid-for work when
           // cancelling mid-batch. Frontend can decide whether to Apply the partial set.
           if (out.length > 0) {
-            spindle.sendToFrontend({ type: "rewrite_multi_result", segments: out, tokens: totalPromptTokens || undefined })
+            send({ type: "rewrite_multi_result", segments: out, tokens: totalPromptTokens || undefined })
           }
-          spindle.sendToFrontend({ type: "rewrite_cancelled", reason: cancelReason })
+          send({ type: "rewrite_cancelled", reason: cancelReason })
           break
         }
         if (!out.length) {
-          spindle.sendToFrontend({ type: "rewrite_error", error: "Model returned empty rewrites for every segment." })
+          send({ type: "rewrite_error", error: "Model returned empty rewrites for every segment." })
           break
         }
-        spindle.sendToFrontend({ type: "rewrite_multi_result", segments: out, tokens: totalPromptTokens || undefined })
+        send({ type: "rewrite_multi_result", segments: out, tokens: totalPromptTokens || undefined })
       } catch (err: any) {
         if (err?.name === "AbortError") {
-          spindle.sendToFrontend({ type: "rewrite_cancelled" })
+          send({ type: "rewrite_cancelled" })
           break
         }
         spindle.log.error(`rewrite_multi failed: ${err?.message}`)
-        spindle.sendToFrontend({ type: "rewrite_error", error: String(err?.message ?? err) })
+        send({ type: "rewrite_error", error: String(err?.message ?? err) })
       }
       break
     }
@@ -544,18 +579,18 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
     case "apply": {
       try {
         if (!spindle.permissions.has("chat_mutation")) {
-          spindle.sendToFrontend({ type: "apply_error", error: "Missing chat_mutation permission." })
+          send({ type: "apply_error", error: "Missing chat_mutation permission." })
           break
         }
         const msgs = (await spindle.chat.getMessages(msg.chatId)) as Array<{ id: string; content: string }>
         const target = msgs.find((m) => m.id === msg.messageId)
         if (!target) {
-          spindle.sendToFrontend({ type: "apply_error", error: "Target message not found." })
+          send({ type: "apply_error", error: "Target message not found." })
           break
         }
         const newContent = spliceRewrite(target.content, msg.R, msg.rs, msg.re, msg.output)
         if (newContent === null) {
-          spindle.sendToFrontend({
+          send({
             type: "apply_error",
             error: "Couldn't locate the selection in the message. Copy the output and edit manually.",
           })
@@ -563,17 +598,17 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
         }
         await spindle.chat.updateMessage(msg.chatId, msg.messageId, { content: newContent })
         // Push onto the per-user undo stack; applying clears this user's redo.
-        const cfg = await loadConfig()
-        const hist = await loadHistory()
+        const cfg = await loadConfig(userId)
+        const hist = await loadHistory(userId)
         hist.undo.push({ chatId: msg.chatId, messageId: msg.messageId, prev: target.content, applied: newContent, userId })
         trimUndo(hist, userId, histCap(cfg))
         hist.redo = hist.redo.filter((e) => !ownsEntry(e, userId))
-        await saveHistory(hist)
-        spindle.sendToFrontend({ type: "apply_done", messageId: msg.messageId, canUndo: countOwned(hist.undo, userId) > 0, canRedo: false })
+        await saveHistory(userId, hist)
+        send({ type: "apply_done", messageId: msg.messageId, canUndo: countOwned(hist.undo, userId) > 0, canRedo: false })
         spindle.log.info(`Rewrite applied to message ${msg.messageId.slice(0, 8)}`)
       } catch (err: any) {
         spindle.log.error(`apply failed: ${err?.message}`)
-        spindle.sendToFrontend({ type: "apply_error", error: String(err?.message ?? err) })
+        send({ type: "apply_error", error: String(err?.message ?? err) })
       }
       break
     }
@@ -581,13 +616,13 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
     case "apply_multi": {
       try {
         if (!spindle.permissions.has("chat_mutation")) {
-          spindle.sendToFrontend({ type: "apply_error", error: "Missing chat_mutation permission." })
+          send({ type: "apply_error", error: "Missing chat_mutation permission." })
           break
         }
         const msgs = (await spindle.chat.getMessages(msg.chatId)) as Array<{ id: string; content: string }>
-        const multiCfg = await loadConfig()
+        const multiCfg = await loadConfig(userId)
         const cap = histCap(multiCfg)
-        const hist = await loadHistory()
+        const hist = await loadHistory(userId)
         const skipped: string[] = []
         let applied = 0
         let midLoopError: string | null = null
@@ -622,13 +657,13 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
         // successful writes.
         if (applied > 0) {
           hist.redo = hist.redo.filter((e) => !ownsEntry(e, userId))
-          await saveHistory(hist)
+          await saveHistory(userId, hist)
         }
         if (midLoopError) {
-          spindle.sendToFrontend({ type: "apply_error", error: `Partial apply (${applied} succeeded): ${midLoopError}` })
+          send({ type: "apply_error", error: `Partial apply (${applied} succeeded): ${midLoopError}` })
           break
         }
-        spindle.sendToFrontend({
+        send({
           type: "apply_multi_done",
           applied,
           skipped,
@@ -638,7 +673,7 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
         spindle.log.info(`Multi-rewrite applied to ${applied} message(s), skipped ${skipped.length}`)
       } catch (err: any) {
         spindle.log.error(`apply_multi failed: ${err?.message}`)
-        spindle.sendToFrontend({ type: "apply_error", error: String(err?.message ?? err) })
+        send({ type: "apply_error", error: String(err?.message ?? err) })
       }
       break
     }
@@ -646,35 +681,35 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
     case "undo": {
       try {
         if (!spindle.permissions.has("chat_mutation")) {
-          spindle.sendToFrontend({ type: "undo_error", error: "Missing chat_mutation permission." })
+          send({ type: "undo_error", error: "Missing chat_mutation permission." })
           break
         }
-        const hist = await loadHistory()
+        const hist = await loadHistory(userId)
         const idx = topOwnedIndex(hist.undo, userId)
         if (idx < 0) {
-          spindle.sendToFrontend({ type: "undo_error", error: "Nothing to undo." })
+          send({ type: "undo_error", error: "Nothing to undo." })
           break
         }
         const entry = hist.undo[idx]
         const msgs = (await spindle.chat.getMessages(entry.chatId)) as Array<{ id: string; content: string }>
         const target = msgs.find((m) => m.id === entry.messageId)
         if (!target) {
-          spindle.sendToFrontend({ type: "undo_error", error: "That message no longer exists." })
+          send({ type: "undo_error", error: "That message no longer exists." })
           break
         }
         // Optimistic concurrency: only revert if the live message is still what we applied.
         if (target.content !== entry.applied) {
-          spindle.sendToFrontend({ type: "undo_error", error: "Message changed since the rewrite; undo skipped to protect your edits." })
+          send({ type: "undo_error", error: "Message changed since the rewrite; undo skipped to protect your edits." })
           break
         }
         hist.undo.splice(idx, 1)
         hist.redo.push(entry)
         await spindle.chat.updateMessage(entry.chatId, entry.messageId, { content: entry.prev })
-        await saveHistory(hist)
-        spindle.sendToFrontend({ type: "undo_done", messageId: entry.messageId, canUndo: countOwned(hist.undo, userId) > 0, canRedo: countOwned(hist.redo, userId) > 0 })
+        await saveHistory(userId, hist)
+        send({ type: "undo_done", messageId: entry.messageId, canUndo: countOwned(hist.undo, userId) > 0, canRedo: countOwned(hist.redo, userId) > 0 })
       } catch (err: any) {
         spindle.log.error(`undo failed: ${err?.message}`)
-        spindle.sendToFrontend({ type: "undo_error", error: String(err?.message ?? err) })
+        send({ type: "undo_error", error: String(err?.message ?? err) })
       }
       break
     }
@@ -682,52 +717,52 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
     case "redo": {
       try {
         if (!spindle.permissions.has("chat_mutation")) {
-          spindle.sendToFrontend({ type: "redo_error", error: "Missing chat_mutation permission." })
+          send({ type: "redo_error", error: "Missing chat_mutation permission." })
           break
         }
-        const hist = await loadHistory()
+        const hist = await loadHistory(userId)
         const idx = topOwnedIndex(hist.redo, userId)
         if (idx < 0) {
-          spindle.sendToFrontend({ type: "redo_error", error: "Nothing to redo." })
+          send({ type: "redo_error", error: "Nothing to redo." })
           break
         }
         const entry = hist.redo[idx]
         const msgs = (await spindle.chat.getMessages(entry.chatId)) as Array<{ id: string; content: string }>
         const target = msgs.find((m) => m.id === entry.messageId)
         if (!target) {
-          spindle.sendToFrontend({ type: "redo_error", error: "That message no longer exists." })
+          send({ type: "redo_error", error: "That message no longer exists." })
           break
         }
         // Only re-apply if the message is still in the post-undo state we expect.
         if (target.content !== entry.prev) {
-          spindle.sendToFrontend({ type: "redo_error", error: "Message changed since the undo; redo skipped to protect your edits." })
+          send({ type: "redo_error", error: "Message changed since the undo; redo skipped to protect your edits." })
           break
         }
         hist.redo.splice(idx, 1)
         hist.undo.push(entry)
         await spindle.chat.updateMessage(entry.chatId, entry.messageId, { content: entry.applied })
-        await saveHistory(hist)
-        spindle.sendToFrontend({ type: "redo_done", messageId: entry.messageId, canUndo: countOwned(hist.undo, userId) > 0, canRedo: countOwned(hist.redo, userId) > 0 })
+        await saveHistory(userId, hist)
+        send({ type: "redo_done", messageId: entry.messageId, canUndo: countOwned(hist.undo, userId) > 0, canRedo: countOwned(hist.redo, userId) > 0 })
       } catch (err: any) {
         spindle.log.error(`redo failed: ${err?.message}`)
-        spindle.sendToFrontend({ type: "redo_error", error: String(err?.message ?? err) })
+        send({ type: "redo_error", error: String(err?.message ?? err) })
       }
       break
     }
 
     case "get_history": {
-      const hist = await loadHistory()
-      spindle.sendToFrontend({ type: "history", canUndo: countOwned(hist.undo, userId) > 0, canRedo: countOwned(hist.redo, userId) > 0 })
+      const hist = await loadHistory(userId)
+      send({ type: "history", canUndo: countOwned(hist.undo, userId) > 0, canRedo: countOwned(hist.redo, userId) > 0 })
       break
     }
 
     case "get_connections": {
       try {
         const conns = await spindle.connections.list(userId)
-        spindle.sendToFrontend({ type: "connections", connections: conns.map(c => ({ id: c.id, name: c.name, model: c.model })) })
+        send({ type: "connections", connections: conns.map(c => ({ id: c.id, name: c.name, model: c.model })) })
       } catch (err: any) {
         spindle.log.warn(`connections list failed: ${err?.message}`)
-        spindle.sendToFrontend({ type: "connections", connections: [] })
+        send({ type: "connections", connections: [] })
       }
       break
     }
@@ -738,10 +773,10 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
       let cancelRef: { reason: () => string } | null = null
       try {
         if (!msg.connectionId) {
-          spindle.sendToFrontend({ type: "refine_error", error: "Select a connection first." })
+          send({ type: "refine_error", error: "Select a connection first." })
           break
         }
-        const cfg = await loadConfig()
+        const cfg = await loadConfig(userId)
         const SYS = "You turn a user's rough note into ONE clear, imperative, verb-first instruction for rewriting a passage of prose. Output ONLY the instruction, no preamble or quotes."
         const c = withUserCancel(userId); cancelRef = c
         try {
@@ -757,15 +792,15 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
           const content = (result as Record<string, unknown>)?.content
           const text = stripWrappingQuotes(typeof content === "string" ? content.trim() : "")
           if (!text) {
-            spindle.sendToFrontend({ type: "refine_error", error: "Model returned an empty response." })
+            send({ type: "refine_error", error: "Model returned an empty response." })
             break
           }
-          spindle.sendToFrontend({ type: "refine_result", text })
+          send({ type: "refine_result", text })
         } finally { c.done() }
       } catch (err: any) {
-        if (err?.name === "AbortError") { spindle.sendToFrontend({ type: "refine_error", error: cancelRef?.reason() ?? "Cancelled." }); break }
+        if (err?.name === "AbortError") { send({ type: "refine_error", error: cancelRef?.reason() ?? "Cancelled." }); break }
         spindle.log.error(`refine_prompt failed: ${err?.message}`)
-        spindle.sendToFrontend({ type: "refine_error", error: String(err?.message ?? err) })
+        send({ type: "refine_error", error: String(err?.message ?? err) })
       }
       break
     }
@@ -776,10 +811,10 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
       let cancelRef: { reason: () => string } | null = null
       try {
         if (!msg.connectionId) {
-          spindle.sendToFrontend({ type: "architect_error", error: "Select a connection first." })
+          send({ type: "architect_error", error: "Select a connection first." })
           break
         }
-        const cfg = await loadConfig()
+        const cfg = await loadConfig(userId)
         const SYS = `From the user's description, produce a rewrite STYLE as strict minified JSON: {"name":"<short name>","prompt":"<one clear imperative rewrite instruction>"}. Output ONLY the JSON object.`
         const c = withUserCancel(userId); cancelRef = c
         try {
@@ -798,20 +833,20 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
           raw = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim()
           let parsed: unknown
           try { parsed = JSON.parse(raw) } catch {
-            spindle.sendToFrontend({ type: "architect_error", error: "Could not parse a style from the response." })
+            send({ type: "architect_error", error: "Could not parse a style from the response." })
             break
           }
           const obj = parsed as Record<string, unknown>
           if (typeof obj?.name === "string" && typeof obj?.prompt === "string") {
-            spindle.sendToFrontend({ type: "architect_result", name: obj.name, prompt: obj.prompt })
+            send({ type: "architect_result", name: obj.name, prompt: obj.prompt })
           } else {
-            spindle.sendToFrontend({ type: "architect_error", error: "Could not parse a style from the response." })
+            send({ type: "architect_error", error: "Could not parse a style from the response." })
           }
         } finally { c.done() }
       } catch (err: any) {
-        if (err?.name === "AbortError") { spindle.sendToFrontend({ type: "architect_error", error: cancelRef?.reason() ?? "Cancelled." }); break }
+        if (err?.name === "AbortError") { send({ type: "architect_error", error: cancelRef?.reason() ?? "Cancelled." }); break }
         spindle.log.error(`architect_style failed: ${err?.message}`)
-        spindle.sendToFrontend({ type: "architect_error", error: String(err?.message ?? err) })
+        send({ type: "architect_error", error: String(err?.message ?? err) })
       }
       break
     }
@@ -823,24 +858,23 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
 
     case "get_debug": {
       // Per-user filter — a shared multi-user host must not leak peer users' rewrite metadata.
-      spindle.sendToFrontend({ type: "debug", entries: debugLog.filter((e) => (e.userId || "") === (userId || "")) })
+      send({ type: "debug", entries: debugLog.filter((e) => (e.userId || "") === (userId || "")) })
       break
     }
 
     case "reset_config": {
       try {
-        const cur = await loadConfig()
+        const cur = await loadConfig(userId)
         const next = { ...DEFAULT_CONFIG, connectionId: cur.connectionId }
-        configCache = next
-        await spindle.storage.setJson(CONFIG_FILE, next)
-        await saveHistory({ undo: [], redo: [] })
-        spindle.sendToFrontend({ type: "config", config: next })
-        spindle.sendToFrontend({ type: "history", canUndo: false, canRedo: false })
+        await saveConfig(userId, next)
+        await saveHistory(userId, { undo: [], redo: [] })
+        send({ type: "config", config: next })
+        send({ type: "history", canUndo: false, canRedo: false })
       } catch (err: any) {
         spindle.log.error(`reset_config failed: ${err?.message}`)
         // Signal failure via a persisted:false config echo — the frontend already handles it.
-        const cur = await loadConfig().catch(() => DEFAULT_CONFIG)
-        spindle.sendToFrontend({ type: "config", config: cur, persisted: false })
+        const cur = await loadConfig(userId).catch(() => DEFAULT_CONFIG)
+        send({ type: "config", config: cur, persisted: false })
       }
       break
     }
@@ -850,23 +884,23 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
       // created inside the try).
       let cancelRef: { reason: () => string } | null = null
       if (!msg.connectionId || !msg.characterId) {
-        spindle.sendToFrontend({ type: "autoprofile_error", error: "Need a connection and a character." })
+        send({ type: "autoprofile_error", error: "Need a connection and a character." })
         break
       }
       if (autoInFlight.has(msg.chatId)) {
-        spindle.sendToFrontend({ type: "autoprofile_error", error: "Already generating…" })
+        send({ type: "autoprofile_error", error: "Already generating…" })
         break
       }
       autoInFlight.add(msg.chatId)
       try {
         const c = await spindle.characters.get(msg.characterId, userId)
         if (!c) {
-          spindle.sendToFrontend({ type: "autoprofile_error", error: "Character not found." })
+          send({ type: "autoprofile_error", error: "Character not found." })
           break
         }
         const SYS = "From a character's profile, write a single imperative rewrite instruction that rewrites a passage into THAT character's narration/voice (diction, register, mannerisms). Output ONLY the instruction."
         const USER = `Name: ${c.name}\nPersonality: ${(c.personality || "").slice(0, 500)}\nDescription: ${(c.description || "").slice(0, 500)}`
-        const cfg = await loadConfig()
+        const cfg = await loadConfig(userId)
         const cancel = withUserCancel(userId); cancelRef = cancel
         try {
           const result = await spindle.generate.quiet({
@@ -881,25 +915,25 @@ spindle.onFrontendMessage(async (raw: unknown, userId: string) => {
           const content = (result as Record<string, unknown>)?.content
           const text = typeof content === "string" ? content.trim() : ""
           if (!text) {
-            spindle.sendToFrontend({ type: "autoprofile_error", error: "Model returned an empty response." })
+            send({ type: "autoprofile_error", error: "Model returned an empty response." })
             break
           }
           const name = `${c.name}'s Voice`
-          cfg.autoProfiles[msg.chatId] = { name, prompt: text }
-          configCache = cfg
-          await spindle.storage.setJson(CONFIG_FILE, cfg)
-          spindle.sendToFrontend({ type: "autoprofile_result", chatId: msg.chatId, name, prompt: text })
+          // Re-read: settings may have changed during the generation.
+          const fresh = await loadConfig(userId)
+          await saveConfig(userId, { ...fresh, autoProfiles: { ...fresh.autoProfiles, [msg.chatId]: { name, prompt: text } } })
+          send({ type: "autoprofile_result", chatId: msg.chatId, name, prompt: text })
         } finally { cancel.done() }
       } catch (err: any) {
-        if (err?.name === "AbortError") { spindle.sendToFrontend({ type: "autoprofile_error", error: cancelRef?.reason() ?? "Cancelled." }); break }
+        if (err?.name === "AbortError") { send({ type: "autoprofile_error", error: cancelRef?.reason() ?? "Cancelled." }); break }
         spindle.log.error(`gen_autoprofile failed: ${err?.message}`)
-        spindle.sendToFrontend({ type: "autoprofile_error", error: String(err?.message ?? err) })
+        send({ type: "autoprofile_error", error: String(err?.message ?? err) })
       } finally {
         autoInFlight.delete(msg.chatId)
       }
       break
     }
   }
-})
+}
 
 spindle.log.info("Rewrite extension backend loaded")

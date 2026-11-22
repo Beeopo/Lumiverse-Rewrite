@@ -5,11 +5,14 @@
     "": {
       "name": "rewrite",
       "devDependencies": {
+        "lumiverse-spindle-types": "0.6.81",
         "typescript": "^6.0.3",
       },
     },
   },
   "packages": {
+    "lumiverse-spindle-types": ["lumiverse-spindle-types@0.6.81", "", {}, "sha512-FYmuh7IsOJeayiYvPdzcCXISatbGRO/KypOxv8ShOP1JRwOKB1y8KZPKKhEDaSDn70GTaIWjUQjQHYJBK2Y9fg=="],
+
     "typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
   }
 }

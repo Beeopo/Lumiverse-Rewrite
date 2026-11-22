@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test"
-import { sanitizeImport } from "./settings-io"
+import { sanitizeImport, sanitizeConfig } from "./settings-io"
 
 test("a clean export object round-trips through sanitizeImport", () => {
   const input = {
@@ -202,4 +202,19 @@ test("frequencyPenalty: 5 clamps to 2", () => {
 test("presencePenalty: -5 clamps to -2", () => {
   const out = sanitizeImport({ presencePenalty: -5 })
   expect(out.presencePenalty).toBe(-2)
+})
+
+test("sanitizeConfig keeps machine-local keys and drops wrong types", () => {
+  const out = sanitizeConfig({
+    connectionId: "c1", watch: true, debug: "yes", costCollapsed: false, lengthPct: "200", timeoutSec: 5,
+    autoProfiles: { chatA: { name: "N", prompt: "P" }, chatB: { name: 3 }, chatC: null },
+  })
+  expect(out.connectionId).toBe("c1")
+  expect(out.watch).toBe(true)
+  expect("debug" in out).toBe(false)
+  expect(out.costCollapsed).toBe(false)
+  expect("lengthPct" in out).toBe(false)
+  expect(out.timeoutSec).toBe(10)
+  expect(out.autoProfiles).toEqual({ chatA: { name: "N", prompt: "P" } })
+  expect(sanitizeConfig(null)).toEqual({})
 })

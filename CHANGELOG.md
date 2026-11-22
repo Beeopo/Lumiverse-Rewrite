@@ -4,6 +4,34 @@ All notable changes to this extension are documented here. The format is based o
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] — 2026-11-22
+
+Hardening for multi-user hosts, checked against Lumiverse 1.3.0.
+
+### Fixed
+- **Replies only reach the requesting user.** Every backend message now names its target
+  user. On an operator-scoped install, untargeted sends went to every connected user,
+  including config, debug entries and rewrite results.
+- **Stale results are dropped.** Each run carries a request id. A late reply from a run the
+  watchdog gave up on, or a reply meant for another open tab, no longer lands on the panel
+  or triggers auto-apply.
+- **Undo history can't lose entries.** Apply, multi-apply, undo, redo and reset now run one
+  at a time per user instead of racing on the same history file.
+- **Auto-profile no longer overwrites settings.** It re-reads config after its generation
+  instead of saving the copy it read before the call.
+- **Config is validated on the backend.** Stored and incoming settings go through the same
+  checks as settings import; wrong-typed values are dropped instead of persisted.
+- **Malformed apply offsets are rejected.** Non-integer or NaN span offsets now fail the
+  bounds check instead of slipping past it.
+
+### Changed
+- **Settings and undo history are per user** (`spindle.userStorage`). Existing users keep
+  their settings: with no per-user file yet, the old shared file is read.
+- **Manifest:** dropped the unused `chats` and `ui_panels` permissions (drawer tabs and the
+  active-chat lookup are free). `minimum_lumiverse_version` is now 1.1.0, what the
+  extension was built against.
+- Typecheck now uses `lumiverse-spindle-types` 0.6.81 as a dev dependency.
+
 ## [1.2.0] — 2026-08-05
 
 ### Added

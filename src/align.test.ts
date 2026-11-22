@@ -176,3 +176,10 @@ test("resolveRawInput returns null when R is stale and maps onto a coincidental 
   const out = resolveRawInput(liveRaw, staleR, rs, re, staleR.slice(rs, re))
   expect(out).toBeNull()
 })
+
+test("rejects non-integer span offsets", () => {
+  const s = "The quick brown fox jumps."
+  expect(mapRenderedSpanToRaw(s, s, NaN, 5)).toBeNull()
+  expect(mapRenderedSpanToRaw(s, s, 0, 2.5)).toBeNull()
+  expect(spliceRewrite(s, s, 0, NaN, "x")).toBeNull()
+})

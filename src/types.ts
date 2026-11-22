@@ -88,8 +88,8 @@ export function buildParams(cfg: RewriteConfig): Record<string, number> {
 export type FrontendMsg =
   | { type: "get_config" }
   | { type: "update_config"; config: Partial<RewriteConfig> }
-  | { type: "rewrite"; profileId: string; customPrompt?: string; text: string; concise: boolean; connectionId: string; lengthPct: number; chatId?: string; messageId?: string; characterId?: string; R?: string; rs?: number; re?: number }
-  | { type: "rewrite_multi"; segments: { messageId: string; text: string; R: string; rs: number; re: number }[]; profileId: string; customPrompt?: string; concise: boolean; connectionId: string; lengthPct: number; chatId: string; characterId?: string }
+  | { type: "rewrite"; requestId?: string; profileId: string; customPrompt?: string; text: string; concise: boolean; connectionId: string; lengthPct: number; chatId?: string; messageId?: string; characterId?: string; R?: string; rs?: number; re?: number }
+  | { type: "rewrite_multi"; requestId?: string; segments: { messageId: string; text: string; R: string; rs: number; re: number }[]; profileId: string; customPrompt?: string; concise: boolean; connectionId: string; lengthPct: number; chatId: string; characterId?: string }
   | { type: "apply"; chatId: string; messageId: string; R: string; rs: number; re: number; output: string }
   | { type: "apply_multi"; chatId: string; items: { messageId: string; R: string; rs: number; re: number; output: string }[] }
   | { type: "undo" }
@@ -107,9 +107,9 @@ export type FrontendMsg =
 // Backend → frontend
 export type BackendMsg =
   | { type: "config"; config: RewriteConfig; persisted?: boolean }
-  | { type: "rewrite_result"; text: string; tokens?: number }
-  | { type: "rewrite_multi_result"; segments: { messageId: string; output: string }[]; tokens?: number }
-  | { type: "rewrite_error"; error: string }
+  | { type: "rewrite_result"; text: string; tokens?: number; requestId?: string }
+  | { type: "rewrite_multi_result"; segments: { messageId: string; output: string }[]; tokens?: number; requestId?: string }
+  | { type: "rewrite_error"; error: string; requestId?: string }
   | { type: "apply_done"; messageId: string; canUndo?: boolean; canRedo?: boolean }
   | { type: "apply_multi_done"; applied: number; skipped: string[]; canUndo: boolean; canRedo: boolean }
   | { type: "apply_error"; error: string }
@@ -127,7 +127,7 @@ export type BackendMsg =
   | { type: "autoprofile_error"; error: string }
   | { type: "debug"; entries: DebugEntry[] }
   | { type: "token_estimate"; total: number; system: number; selection: number; sources: { label: string; tokens: number }[] }
-  | { type: "rewrite_cancelled"; reason?: string }
+  | { type: "rewrite_cancelled"; reason?: string; requestId?: string }
 
 export interface DebugEntry {
   ts: number
