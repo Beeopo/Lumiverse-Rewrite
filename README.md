@@ -2,65 +2,67 @@
 
 A [Lumiverse](https://github.com/lumiverse) Spindle extension that rewrites selected message
 text **in place** with an LLM style profile. Highlight a passage, pick a style, hit Run — the
-rewrite is spliced back into the exact span you selected, leaving the rest of the message
-untouched.
+rewrite streams in, and Apply splices it back into the exact span you selected, leaving the rest
+of the message untouched.
 
 It runs entirely against your own configured connections, so you can write the main chat with
 one model and rewrite prose with another (e.g. a fast local model for quick edits).
 
+![Rewrite panel: Changes view, a three-style Multi run in progress, Edit mode, and the Details breakdown](docs/screenshots/overview.jpg)
+
 ## Features
 
+**Rewriting**
+- **Streaming** — the rewrite appears word by word as the model writes it, with a live word count.
+- **One text card** that switches between **Original**, **Rewrite** and **Changes** (a word-level
+  diff that stays readable on long, multi-paragraph selections) and fills the panel down to Run.
+- **One main button** — Run, Cancel while it runs (filling up as passes complete), then Apply once a
+  result for your selection is ready. It reads **Run updated** once you change the style, context,
+  length or text after a run.
+- **Length slider** — Compress on the left (down to 25%), 100% in the middle, Expand on the right
+  (up to 400%); the number box takes exact values.
+- **Point of view holds** — first- and second-person passages stay that way ("I walked" doesn't
+  become "He strolled").
+
 **Styles**
-- Built-in style profiles (expand, compress, add inner thoughts, show-don't-tell, more emotion, …).
-- **Architect** tab for authoring your own styles: write a prompt, AI-refine it, or generate a
-  whole style from a one-line description. Edit, delete, and hide built-ins.
-- **Style this chat** — generate a per-chat "voice" profile from the character card.
-- One-off custom instructions for throwaway rewrites, with a recent-prompts history.
+- 13 built-in styles (expand, compress, add inner thoughts, show-don't-tell, remove LLM-isms, …),
+  your own saved styles, and a per-chat **Style this chat** voice generated from the character card.
+- A compact grid: three rows by default with **Show all**. **Edit** lets you drag styles into your
+  own order and hide any of them.
+- **Multi** — pick several styles for one run. **In order** runs one pass per style, each on the
+  previous pass's output; **Merged** combines them into one instruction and runs once.
+- One-off **Custom…** instructions with AI **Refine** and a recent-prompts history.
+- The **Styles** tab holds your styles: create, edit, delete, write one with AI from a
+  description, and hide built-ins.
 
 **Capture & apply**
 - **Watch mode** auto-captures whatever you highlight in a message; `Alt+R` captures on demand.
-- Corruption-safe in-place splice (render→raw LCS alignment with an authoritative guard) so the
+- Corruption-safe in-place splice (render→raw alignment with an authoritative guard) so the
   rewrite lands exactly where you selected and nowhere else.
 - **Formatting-preserving** — `<font>` colours and markdown (`*italics*`, quotes, links) inside
-  the selection survive the rewrite; the model edits the raw markup in place instead of flattening
-  it to plain text.
-- **Multi-message** rewrite: select across several bubbles and rewrite each in one pass.
-- Word-level **diff preview**, live word-count delta, and editable output before applying.
+  the selection survive the rewrite.
+- **Multi-message** rewrite: select across several bubbles and rewrite each in one run.
 - Multi-level **undo/redo** with a configurable history depth; optional auto-apply.
 
-**Context**
-Each source is individually toggleable and degrades gracefully (skipped, never errors) if a
-permission isn't granted: previous messages, character card, user persona, speaker-awareness,
-memory/cortex, and world-book/lore.
-
-**Cost & control**
-- **Live token-cost estimation** with a per-source breakdown before you spend a request.
-- Length control expressed as a target word-count range; CJK-aware word counting.
-- Per-rewrite **connection picker** — rewrite with a different model than the active chat.
-- **Generation parameters** — set temperature, top-P, top-K, max tokens, and frequency/presence
-  penalties per rewrite from the Options tab (leave any blank to inherit from the connection
-  preset), optionally applied to the AI-authoring calls too.
-- **Request timeout** — how long a generation may run before it's abandoned, set from the Options
-  tab (10–600s, default 120s). Raise it for slow local models or long expansions; lower it if you'd
-  rather fail fast. A timeout says so explicitly, distinct from a cancel.
-- Concise-prompt mode, automatic quote-stripping, cancel in-flight generations.
+**Context & cost**
+- **Details** lists every context source — previous messages, character card, user persona,
+  speaker hint, memory, lorebook — with its own switch and token cost. A source you've switched off
+  shows what it would add. Sources you haven't granted permission for are simply skipped.
+- Per-rewrite **connection** choice (Options), **generation parameters** (temperature, top-P,
+  top-K, max tokens, penalties; blank inherits the preset), and a **request timeout** (10–600s).
+- Settings and undo history are stored **per user**, so shared Lumiverse installs don't mix them.
 - Settings export/import, reset to defaults, and a debug-log export.
-
-**Interface**
-Three tabs — **Rewrite / Architect / Options** — built as accessible, native-feeling Lumiverse
-UI: ARIA tablist with arrow-key navigation, visible focus rings, `aria-live` status, a
-collapsible style chip-grid, and `prefers-reduced-motion` support.
 
 ## Install
 
 This extension ships pre-built bundles in `dist/`. To use it in Lumiverse:
 
 - **From the app:** install it through Lumiverse's extension manager using this repository's URL, **or**
-- **Manually:** copy this folder into your Lumiverse extensions directory and restart the backend.
+- **Manually:** unzip the release into your Lumiverse extensions directory and restart the backend.
 
-Requires Lumiverse `0.1.0` or newer. The extension requests these permissions (declared in
-`spindle.json`): `generation`, `chats`, `chat_mutation`, `ui_panels`, `characters`, `personas`,
-`memories`, `world_books`. Context sources you don't grant are simply skipped.
+Requires Lumiverse **1.1.0** or newer. The extension
+requests these permissions (declared in `spindle.json`): `generation`, `chat_mutation`,
+`characters`, `personas`, `memories`, `world_books`. Context sources you don't grant are skipped.
 
 ## Build from source
 
@@ -70,7 +72,7 @@ Requires [Bun](https://bun.sh).
 bun install
 bun run build      # → dist/backend.js, dist/frontend.js (minified)
 bun run typecheck  # tsc --noEmit
-bun test           # unit tests for alignment, multi-seg, profiles, quotes, etc.
+bun test           # unit tests: alignment, diff, profiles, settings, style order, length scale, …
 ```
 
 `dist/` is committed so the extension is installable without a build step; rebuild after changing

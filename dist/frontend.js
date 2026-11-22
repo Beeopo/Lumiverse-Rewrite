@@ -81,7 +81,7 @@ Always:
     /* ── Diff ── */
     .rw-diff { padding: 9px 11px; background: var(--lumiverse-fill); border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); font-size: calc(13px * var(--lumiverse-font-scale, 1)); line-height: 1.55; white-space: pre-wrap; max-height: 220px; overflow-y: auto; color: var(--lumiverse-text); }
     .rw-diff ins { background: color-mix(in srgb, var(--lumiverse-success) 24%, transparent); text-decoration: none; border-radius: 2px; }
-    .rw-diff del { color: var(--lumiverse-danger); text-decoration: line-through; opacity: .8; }
+    .rw-diff del { color: var(--lumiverse-danger); text-decoration: line-through; opacity: .8; margin-right: 3px; }
 
     /* ── Managed-style list items ── */
     .rw-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill); transition: border-color var(--lumiverse-transition-fast); }
