@@ -12,6 +12,7 @@ A redesigned panel: one text card, a compact style grid, and streamed results.
 - **Streaming.** Rewrites appear word by word as the model writes them (`spindle.generate.quietStream`), with a live word count.
 - **Multi-style runs.** **Multi** picks several styles; chips show the pick order. **In order** runs one pass per style, each on the last pass's output. **Merged** combines the styles into one instruction with a short helper call, then runs once. Works for multi-message selections too.
 - **Style grid controls.** Three rows show by default with **Show all**. **Edit** reorders styles by dragging and hides any style (built-in, your own, or the chat style) with the eye. Order and hidden styles are saved.
+- **Progress on the Run button.** While a run is going, the Cancel button fills from left to right: one step per pass (and per message for multi-message selections), plus the merge call in Merged mode, and it fills within a pass as text streams in.
 - **Details** under the text card lists every context source with its switch and token cost; a switched-off source shows what it would add. Length moved here too.
 
 ### Fixed

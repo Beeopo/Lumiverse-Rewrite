@@ -361,6 +361,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     .rw-fixed { color: var(--lumiverse-text-muted); padding-left: 43px; }
     .rw-tot { font-weight: 700; padding-top: 7px; border-top: 1px solid var(--lumiverse-border); }
     .rw-actions .run { flex: 1 1 auto; width: auto; }
+    .rw-btn.run { position: relative; isolation: isolate; overflow: hidden; }
+    .rw-btn.run::before { content: ""; position: absolute; inset: 0 auto 0 0; width: calc(var(--rw-prog, 0) * 100%); background: color-mix(in srgb, #fff 22%, transparent); z-index: -1; transition: width .4s ease-out; }
+    .rw-btn.run:not(.rw-busy)::before { width: 0; transition: none; }
     .rw-sum { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 500; font-size: calc(11px * var(--lumiverse-font-scale, 1)); max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .rw-pane > details.rw-sec:first-child { border-top: 0; }
     .rw-danger { color: var(--lumiverse-danger); }
@@ -525,12 +528,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const h = `${Math.max(420, Math.floor((window.innerHeight - r.top) / zoom))}px`
     if (h !== lastFit) { lastFit = h; root.style.minHeight = h }
   }
-  // Animation-frame, resize and ResizeObserver callbacks don't reach this tab in the host,
-  // so refit on tab activation and with a cheap timer check (writes only on change).
-  // shortcut: 1s polling; swap for a host resize event if Spindle adds one.
-  const offActivate = tab.onActivate(() => { setTimeout(fitPanel, 30); setTimeout(fitPanel, 300) })
-  const fitTimer = setInterval(fitPanel, 1000)
-  setTimeout(fitPanel, 50)
+  // Refit when the panel's own size changes (first attach, content changes), when the
+  // window resizes, and when this drawer tab is activated.
+  const fitObserver = new ResizeObserver(() => fitPanel())
+  fitObserver.observe(root)
+  window.addEventListener("resize", fitPanel)
+  const offActivate = tab.onActivate(() => requestAnimationFrame(fitPanel))
 
   const $ = <T extends HTMLElement>(id: string) => root.querySelector(`#${id}`) as T
   const connEl = $("rw-conn") as HTMLSelectElement
@@ -746,6 +749,16 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let lastEstimate: Extract<BackendMsg, { type: "token_estimate" }> | null = null
   // What the last run used; compared with the current choices to label the Run button.
   let lastRunSig = ""
+  // Run progress: total model calls this run, whether a merge call comes first, and the
+  // expected words per pass (for filling within a streamed pass).
+  let runSteps = 1
+  let runMerged = false
+  let runPassWords = 1
+  let runProg = 0
+  function setProgress(p: number) {
+    runProg = Math.max(runProg, Math.min(1, p)) // never moves backwards
+    runBtn.style.setProperty("--rw-prog", String(runProg))
+  }
   let hiddenProfilesList: string[] = []
   let autoProfilesMap: Record<string, { name: string; prompt: string }> = {}
   let pendingConnId = ""
@@ -1315,6 +1328,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     // leaving Watch stuck (mobile has no Alt+R escape).
     resultPending = false
     if (runTimer) { clearTimeout(runTimer); runTimer = null }
+    runBtn.classList.remove("rw-busy"); runProg = 0; runBtn.style.removeProperty("--rw-prog")
     syncActions()
   }
 
@@ -1330,6 +1344,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (isCustom && !customText) { setStatus(msgEl, "Enter a custom instruction.", true); return }
     if (!inputEl.value.trim()) { setStatus(msgEl, "Nothing to rewrite — input is empty.", true); return }
     lastRunSig = runSig()
+    runMerged = multiActive && multiMode === "merged"
+    const passCount = multiActive && multiMode === "order" ? multiPicks.length : 1
+    runSteps = (multiCapture ? multiCapture.segments.length : 1) * passCount + (runMerged ? 1 : 0)
+    runPassWords = Math.max(1, Math.round(wc(inputEl.value) * (parseInt(lenValEl.value, 10) || 100) / 100))
+    runProg = 0; runBtn.style.setProperty("--rw-prog", "0"); runBtn.classList.add("rw-busy")
     running = true; runBtn.setAttribute("aria-busy", "true"); syncActions(); updateDiffView(); setStatus(msgEl, "Rewriting…")
     if (runTimer) clearTimeout(runTimer)
     // rewrite_multi runs its segments SEQUENTIALLY, each with its own full backend timeout,
@@ -1339,7 +1358,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     runTimer = setTimeout(() => {
       runTimer = null
       runRequestId = ""
-      running = false; runBtn.disabled = false; runBtn.removeAttribute("aria-busy"); syncActions()
+      running = false; runBtn.disabled = false; runBtn.removeAttribute("aria-busy"); runBtn.classList.remove("rw-busy"); runProg = 0; syncActions()
       setStatus(msgEl, "Timed out waiting for a response. Try again.", true)
     }, RUN_WATCHDOG_MS * segCount * passes)
     const active = ctx.getActiveChat()
@@ -1508,11 +1527,13 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         outputEl.value = m.text
         if (view !== "out") setView("out")
         outputEl.scrollTop = outputEl.scrollHeight
+        setProgress(((runMerged ? 1 : 0) + (m.pass - 1) + Math.min(0.95, wc(m.text) / runPassWords)) / runSteps)
         setStatus(msgEl, `${m.passes > 1 ? `Pass ${m.pass} of ${m.passes} · ${m.label} · ` : ""}Writing… ${wc(m.text)} word${wc(m.text) === 1 ? "" : "s"}`)
         break
       }
       case "rewrite_stage": {
         if (!running) break
+        if (m.stage === "pass") setProgress(((runMerged ? 1 : 0) + ((m.segment ?? 1) - 1) * (m.passes ?? 1) + ((m.pass ?? 1) - 1)) / runSteps)
         if (m.stage === "merging") setStatus(msgEl, `Merging ${m.passes} styles into one prompt…`)
         else setStatus(msgEl, `${m.segments ? `Message ${m.segment} of ${m.segments} · ` : ""}Pass ${m.pass} of ${m.passes} · ${m.label}…`)
         break
@@ -1621,7 +1642,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     for (const t of aiWatchdogs.values()) clearTimeout(t)
     aiWatchdogs.clear()
     unsub()
-    clearInterval(fitTimer)
+    fitObserver.disconnect()
+    window.removeEventListener("resize", fitPanel)
     offActivate()
     removeStyle()
     ctx.dom.cleanup()
