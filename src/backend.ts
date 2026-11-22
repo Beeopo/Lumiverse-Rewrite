@@ -32,7 +32,16 @@ function addAbort(userId: string | undefined, ac: AbortController) {
 function delAbort(userId: string | undefined, ac: AbortController) {
   activeAborts.get(userId || "")?.delete(ac)
 }
+// Bumped by every cancel, so a run can notice a cancel that arrived between model calls.
+const cancelEpochs = new Map<string, number>()
+const cancelEpoch = (userId: string | undefined) => cancelEpochs.get(userId || "") ?? 0
+function throwIfCancelled(userId: string | undefined, startEpoch: number) {
+  if (cancelEpoch(userId) !== startEpoch) throw new DOMException("Cancelled.", "AbortError")
+}
+// A cancel or our own timeout; hosts may surface the timeout as a TimeoutError.
+const isAbort = (err: any): boolean => err?.name === "AbortError" || err?.name === "TimeoutError"
 function cancelUser(userId: string | undefined) {
+  cancelEpochs.set(userId || "", cancelEpoch(userId) + 1)
   const set = activeAborts.get(userId || "")
   if (!set) return
   for (const ac of set) ac.abort()
@@ -105,9 +114,10 @@ interface HistEntry { chatId: string; messageId: string; prev: string; applied: 
 interface History { undo: HistEntry[]; redo: HistEntry[] }
 
 async function loadHistory(userId: string | undefined): Promise<History> {
-  const h = await readUserJson<History>(HISTORY_FILE, userId, { undo: [], redo: [] })
+  const h = await readUserJson<Partial<History> | null>(HISTORY_FILE, userId, { undo: [], redo: [] })
+  const list = (x: unknown) => (Array.isArray(x) ? (x as HistEntry[]) : [])
   // The legacy shared file holds every user's entries; keep only the caller's.
-  return { undo: h.undo.filter((e) => ownsEntry(e, userId)), redo: h.redo.filter((e) => ownsEntry(e, userId)) }
+  return { undo: list(h?.undo).filter((e) => ownsEntry(e, userId)), redo: list(h?.redo).filter((e) => ownsEntry(e, userId)) }
 }
 async function saveHistory(userId: string | undefined, h: History): Promise<void> {
   await spindle.userStorage.setJson(HISTORY_FILE, h, { userId: userId || undefined })
@@ -115,6 +125,13 @@ async function saveHistory(userId: string | undefined, h: History): Promise<void
 // History ops are read-modify-write; run them one at a time per user so two quick
 // applies/undos can't drop each other's entries.
 const histLocks = new Map<string, Promise<unknown>>()
+const configLocks = new Map<string, Promise<unknown>>()
+function withConfigLock<T>(userId: string | undefined, fn: () => Promise<T>): Promise<T> {
+  const key = userId || ""
+  const next = (configLocks.get(key) ?? Promise.resolve()).then(fn, fn)
+  configLocks.set(key, next.catch(() => {}))
+  return next
+}
 const HISTORY_OPS = new Set(["apply", "apply_multi", "undo", "redo", "reset_config"])
 // Owner test — empty tag matches empty tag (pre-userId entries share ownership with an
 // unauthenticated caller). Prevents user A's Undo from reverting user B's rewrite.
@@ -306,6 +323,7 @@ function sourceEnabled(cfg: RewriteConfig, label: string): boolean {
 
 // The profiles a run applies, in order. Two or more ids is a multi-style run.
 function resolvePasses(cfg: RewriteConfig, msg: { profileId: string; customPrompt?: string; profileIds?: string[] }): Profile[] {
+  if (!msg.profileId && !msg.customPrompt && !(msg.profileIds?.length)) throw new Error("Pick a style first.")
   const ids = (msg.profileIds ?? []).filter((id) => typeof id === "string" && id && id !== "__custom__")
   return ids.length > 1 ? ids.map((id) => resolveProfile(cfg, id)) : [resolveProfile(cfg, msg.profileId, msg.customPrompt)]
 }
@@ -387,14 +405,18 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
     }
 
     case "update_config": {
-      const next = { ...(await loadConfig(userId)), ...sanitizeConfig(msg.config) }
+      let next: RewriteConfig = DEFAULT_CONFIG
       let persisted = true
-      try {
-        await saveConfig(userId, next)
-      } catch (err: any) {
-        persisted = false
-        spindle.log.error(`update_config persist failed: ${err?.message}`)
-      }
+      await withConfigLock(userId, async () => {
+        try {
+          next = { ...(await loadConfig(userId)), ...sanitizeConfig(msg.config) }
+          await saveConfig(userId, next)
+        } catch (err: any) {
+          persisted = false
+          spindle.log.error(`update_config persist failed: ${err?.message}`)
+          next = await loadConfig(userId).catch(() => next)
+        }
+      })
       // saveConfig updates the cache only after the write succeeds, so a failed save
       // can't leave memory and disk disagreeing.
       // Always reply so the UI never hangs, even if persistence failed. persisted:false lets
@@ -412,7 +434,7 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
         const cfg = await loadConfig(userId)
         const profile = resolveProfile(cfg, msg.profileId, msg.customPrompt)
         // Assemble every source, so the panel can show what a switched-off source would add.
-        const allOn: RewriteConfig = { ...cfg, usePrevMessages: true, useCharCard: true, useUserPersona: true, speakerAware: true, useMemory: true, useLorebook: true }
+        const allOn: RewriteConfig = !msg.full ? cfg : { ...cfg, usePrevMessages: true, useCharCard: true, useUserPersona: true, speakerAware: true, useMemory: true, useLorebook: true }
         const blocks = await assembleContextBlocks(
           allOn,
           { chatId: msg.chatId, messageId: msg.messageId, characterId: msg.characterId },
@@ -434,7 +456,7 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
           const tokens = (await spindle.tokens.countMessages([{ role: "user", content: b.text }], { userId })).total_tokens
           sources.push({ label: b.label, tokens, on: sourceEnabled(cfg, b.label) })
         }
-        send({ type: "token_estimate", total, system, selection, sources })
+        send({ type: "token_estimate", total, system, selection, sources, seq: msg.seq })
       } catch (err: any) {
         spindle.log.warn(`preview_tokens failed: ${err?.message}`)
         send({ type: "token_estimate", total: 0, system: 0, selection: 0, sources: [] })
@@ -459,6 +481,7 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
           send({ type: "rewrite_error", error: "Nothing to rewrite — the input is empty." })
           break
         }
+        const startEpoch = cancelEpoch(userId)
         const cfg = await loadConfig(userId)
         _debugCfg = cfg
         let profiles = resolvePasses(cfg, msg)
@@ -493,6 +516,7 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
           if (target) modelInput = resolveRawInput(target.content, msg.R, msg.rs, msg.re, msg.text) ?? msg.text
         }
 
+        throwIfCancelled(userId, startEpoch)
         _debugT0 = Date.now()
         if (profiles.length > 1 && msg.multiMode === "merged") {
           send({ type: "rewrite_stage", stage: "merging", passes: profiles.length })
@@ -518,6 +542,7 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
             spindle.log.warn(`token count skipped: ${e?.message}`)
           }
           _debugPromptChars += messages[1].content.length
+          throwIfCancelled(userId, startEpoch)
           const c = withUserCancel(userId); cancelRef = c
           let raw: string
           try {
@@ -534,7 +559,7 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
         if (cfg.debug) pushDebug({ ts: Date.now(), profile: _debugProfile, promptChars: _debugPromptChars, outputChars: current.length, tokens: promptTokens, ms: Date.now() - _debugT0 }, userId)
         send({ type: "rewrite_result", text: current, tokens: promptTokens })
       } catch (err: any) {
-        if (err?.name === "AbortError") {
+        if (isAbort(err)) {
           send({ type: "rewrite_cancelled", reason: cancelRef?.reason() ?? "Cancelled." })
           break
         }
@@ -556,6 +581,7 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
           send({ type: "rewrite_error", error: "Nothing to rewrite — no segments." })
           break
         }
+        const startEpoch = cancelEpoch(userId)
         const cfg = await loadConfig(userId)
         // Resolve the passes ONCE — same resolution as the single `rewrite` case.
         let profiles = resolvePasses(cfg, msg)
@@ -603,12 +629,13 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
             } catch (e: any) {
               spindle.log.warn(`token count skipped: ${e?.message}`)
             }
+            if (cancelEpoch(userId) !== startEpoch) { cancelled = true; break segments }
             const c = withUserCancel(userId); cancelRef = c
             let raw: string
             try {
               raw = (await genText(cfg, userId, msg.connectionId, messages, c.signal)).trim()
             } catch (segErr: any) {
-              if (segErr?.name === "AbortError") {
+              if (isAbort(segErr)) {
                 cancelled = true
                 cancelReason = c.reason()
                 break segments
@@ -618,7 +645,7 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
             const text = wasQuoteWrapped(current) ? raw : stripWrappingQuotes(raw)
             // An empty pass leaves this segment unchanged from here on; an empty first pass
             // means no output for it, and apply_multi skips segments without one.
-            if (!text) { current = ""; break }
+            if (!text) { if (i === 0) current = ""; break }
             current = text
           }
           if (current) out.push({ messageId: seg.messageId, output: current })
@@ -627,7 +654,7 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
           // Deliver already-completed segments so the user doesn't lose paid-for work when
           // cancelling mid-batch. Frontend can decide whether to Apply the partial set.
           if (out.length > 0) {
-            send({ type: "rewrite_multi_result", segments: out, tokens: totalPromptTokens || undefined })
+            send({ type: "rewrite_multi_result", segments: out, tokens: totalPromptTokens || undefined, partial: true })
           }
           send({ type: "rewrite_cancelled", reason: cancelReason })
           break
@@ -638,7 +665,7 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
         }
         send({ type: "rewrite_multi_result", segments: out, tokens: totalPromptTokens || undefined })
       } catch (err: any) {
-        if (err?.name === "AbortError") {
+        if (isAbort(err)) {
           send({ type: "rewrite_cancelled", reason: cancelRef?.reason() ?? "Cancelled." })
           break
         }
@@ -870,7 +897,7 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
           send({ type: "refine_result", text })
         } finally { c.done() }
       } catch (err: any) {
-        if (err?.name === "AbortError") { send({ type: "refine_error", error: cancelRef?.reason() ?? "Cancelled." }); break }
+        if (isAbort(err)) { send({ type: "refine_error", error: cancelRef?.reason() ?? "Cancelled." }); break }
         spindle.log.error(`refine_prompt failed: ${err?.message}`)
         send({ type: "refine_error", error: String(err?.message ?? err) })
       }
@@ -916,7 +943,7 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
           }
         } finally { c.done() }
       } catch (err: any) {
-        if (err?.name === "AbortError") { send({ type: "architect_error", error: cancelRef?.reason() ?? "Cancelled." }); break }
+        if (isAbort(err)) { send({ type: "architect_error", error: cancelRef?.reason() ?? "Cancelled." }); break }
         spindle.log.error(`architect_style failed: ${err?.message}`)
         send({ type: "architect_error", error: String(err?.message ?? err) })
       }
@@ -936,9 +963,12 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
 
     case "reset_config": {
       try {
-        const cur = await loadConfig(userId)
-        const next = { ...DEFAULT_CONFIG, connectionId: cur.connectionId }
-        await saveConfig(userId, next)
+        const next = await withConfigLock(userId, async () => {
+          const cur = await loadConfig(userId)
+          const fresh = { ...DEFAULT_CONFIG, connectionId: cur.connectionId }
+          await saveConfig(userId, fresh)
+          return fresh
+        })
         await saveHistory(userId, { undo: [], redo: [] })
         send({ type: "config", config: next })
         send({ type: "history", canUndo: false, canRedo: false })
@@ -992,12 +1022,16 @@ async function handleMessage(msg: FrontendMsg, userId: string) {
           }
           const name = `${c.name}'s Voice`
           // Re-read: settings may have changed during the generation.
-          const fresh = await loadConfig(userId)
-          await saveConfig(userId, { ...fresh, autoProfiles: { ...fresh.autoProfiles, [msg.chatId]: { name, prompt: text } } })
+          await withConfigLock(userId, async () => {
+            const fresh = await loadConfig(userId)
+            // Unhide the chat style slot so the new style is selectable.
+            const hiddenProfiles = fresh.hiddenProfiles.filter((h) => h !== "auto")
+            await saveConfig(userId, { ...fresh, hiddenProfiles, autoProfiles: { ...fresh.autoProfiles, [msg.chatId]: { name, prompt: text } } })
+          })
           send({ type: "autoprofile_result", chatId: msg.chatId, name, prompt: text })
         } finally { cancel.done() }
       } catch (err: any) {
-        if (err?.name === "AbortError") { send({ type: "autoprofile_error", error: cancelRef?.reason() ?? "Cancelled." }); break }
+        if (isAbort(err)) { send({ type: "autoprofile_error", error: cancelRef?.reason() ?? "Cancelled." }); break }
         spindle.log.error(`gen_autoprofile failed: ${err?.message}`)
         send({ type: "autoprofile_error", error: String(err?.message ?? err) })
       } finally {

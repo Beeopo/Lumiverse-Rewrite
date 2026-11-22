@@ -21,6 +21,14 @@ A redesigned panel: one text card, a compact style grid, and streamed results.
 - **Changes works on large selections.** Long texts are aligned sentence by sentence, then diffed word by word, instead of falling back to plain text past ~500 words.
 - **Run updated.** After a run, the button reads Run again until you change the style, picks, context, length, connection or text; then it reads Run updated.
 
+- **Cancel works between model calls.** Cancel used to do nothing while a run was gathering context or between passes; the run now stops at the next step.
+- **A cancelled multi-message run is never auto-applied.** Its finished messages stay ready for a manual Apply instead of being dropped.
+- **A failed Apply can be retried.** The result and the Apply button stay put after an error such as "message changed".
+- **Settings saves no longer overwrite each other** when two land at once (for example a toggle while a chat style is being generated).
+- **Changes stays inside the card** on long selections and uses the same text style as Original and Rewrite.
+- **Streaming no longer pins the view:** you can switch to Original or Changes while a run streams, and a cancelled or failed stream leaves the previous result in place.
+- Smaller fixes: a Watch capture can no longer land mid-run; a multi-message capture's text is read-only (Run uses the captured messages); a newer token estimate always wins; an empty later Multi pass keeps the earlier pass's text; generating a chat style unhides the chat-style slot; switched-off sources are only priced while Details is open; a malformed history file no longer breaks undo.
+
 ### Changed
 - **One text card** switches between **Original**, **Rewrite** and **Changes**, and fills the panel down to the Run button.
 - **One main button:** Run, Cancel while running, then Apply once a result for a captured selection is ready (Run again sits beside it).

@@ -55,7 +55,7 @@ export function sysPrompt(concise: boolean): string {
 export function narrationPerson(text: string): "first" | "second" | null {
   const narration = text.replace(/"[^"]*"|\u201c[^\u201d]*\u201d/g, " ")
   const count = (re: RegExp) => (narration.match(re) || []).length
-  const first = count(/\b(I|me|my|mine|myself|we|us|our|ours|ourselves|I'm|I've|I'd|I'll)\b/g)
+  const first = count(/\b(I|I'm|I've|I'd|I'll)\b/g) + count(/\b(me|my|mine|myself|we|us|our|ours|ourselves)\b/gi)
   const second = count(/\b(you|your|yours|yourself|you're|you've|you'd|you'll)\b/gi)
   if (first > 0 && first >= second) return "first"
   if (second > 0) return "second"

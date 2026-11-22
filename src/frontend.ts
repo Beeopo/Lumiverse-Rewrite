@@ -349,11 +349,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     .rw-grip { display: inline-flex; color: var(--lumiverse-text-dim); }
     .rw-eye { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 5px; background: none; color: var(--lumiverse-text-muted); cursor: pointer; }
     .rw-eye:hover { background: var(--lumiverse-fill-hover); color: var(--lumiverse-text); }
-    .rw-card { flex: 1 1 auto; min-height: 170px; display: flex; flex-direction: column; border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill); overflow: hidden; }
+    .rw-card { flex: 1 1 0; min-height: 170px; display: flex; flex-direction: column; border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill); overflow: hidden; }
     .rw-card:focus-within { border-color: var(--rw-accent); }
     .rw-card-hd { display: flex; align-items: center; gap: 8px; padding: 6px 7px; border-bottom: 1px solid var(--lumiverse-border); }
     .rw-cardtext { flex: 1 1 auto; min-height: 0; width: 100%; box-sizing: border-box; resize: none; overflow-y: auto; padding: 10px 11px; border: 0; background: transparent; color: var(--lumiverse-text); font: inherit; line-height: 1.55; outline: none; }
-    .rw-card .rw-diff { max-height: none; border: 0; border-radius: 0; background: transparent; }
+    .rw-card .rw-diff { max-height: none; border: 0; border-radius: 0; background: transparent; padding: 10px 11px; font-size: inherit; line-height: 1.55; }
     .rw-meta { display: flex; align-items: center; gap: 8px; min-height: 22px; }
     .rw-meta .rw-cost-total { margin-left: 0; font-weight: 500; color: var(--lumiverse-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .rw-details { display: flex; flex-direction: column; gap: 8px; padding: 10px 11px; border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill); }
@@ -753,6 +753,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let lastEstimate: Extract<BackendMsg, { type: "token_estimate" }> | null = null
   // What the last run used; compared with the current choices to label the Run button.
   let lastRunSig = ""
+  // Output before the current run started, restored if the run streams partial text and
+  // then fails or is cancelled.
+  let prevOutput = ""
+  let streamed = false
+  let previewSeq = 0
   // Run progress: total model calls this run, whether a merge call comes first, and the
   // expected words per pass (for filling within a streamed pass).
   let runSteps = 1
@@ -1039,6 +1044,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (v === "diff") renderDiff(diffEl, inputEl.value, outputEl.value)
   }
   function updateDiffView() {
+    inputEl.readOnly = !!multiCapture
     const has = !!outputEl.value
     viewOutBtn.disabled = !has && !running
     viewDiffBtn.disabled = !has
@@ -1122,6 +1128,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       const active = ctx.getActiveChat()
       ctx.sendToBackend({
         type: "preview_tokens",
+        seq: ++previewSeq,
+        full: !detailsEl.hidden,
         text,
         profileId: styleEl.value,
         customPrompt: isCustom ? customEl.value : undefined,
@@ -1139,6 +1147,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let debounce: ReturnType<typeof setTimeout> | null = null
   let runTimer: ReturnType<typeof setTimeout> | null = null
   function doCapture(): boolean {
+    if (running) return false
     const chatId = ctx.getActiveChat().chatId
     if (!chatId) return false
     // Multi-message selection takes priority — but only when it spans ≥2 messages.
@@ -1345,6 +1354,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (multiOn && multiPicks.length === 0) { setStatus(msgEl, "Pick at least one style.", true); return }
     const multiActive = multiOn && multiPicks.length > 1
     const profileId = multiOn ? multiPicks[0] : styleEl.value
+    if (!profileId) { setStatus(msgEl, "Pick a style first.", true); return }
+    if (debounce) { clearTimeout(debounce); debounce = null }
+    prevOutput = outputEl.value; streamed = false
     const multiFields = multiActive ? { profileIds: multiPicks, multiMode } : {}
     const passes = multiActive ? (multiMode === "order" ? multiPicks.length : 2) : 1
     const isCustom = !multiOn && styleEl.value === "__custom__"
@@ -1533,7 +1545,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       case "rewrite_chunk": {
         if (!running) break
         outputEl.value = m.text
-        if (view !== "out") setView("out")
+        if (!streamed) { streamed = true; setView("out") }
         outputEl.scrollTop = outputEl.scrollHeight
         setProgress(((runMerged ? 1 : 0) + (m.pass - 1) + Math.min(0.95, wc(m.text) / runPassWords)) / runSteps)
         setStatus(msgEl, `${m.passes > 1 ? `Pass ${m.pass} of ${m.passes} · ${m.label} · ` : ""}Writing… ${wc(m.text)} word${wc(m.text) === 1 ? "" : "s"}`)
@@ -1562,15 +1574,27 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           const n = multiCapture.segments.filter((s) => s.output != null).length
           setStatus(msgEl, `Rewrote ${n} messages — Apply applies all.${m.tokens ? ` · prompt ~${m.tokens} tok` : ""}`)
           updateDiffView()
-          if (autoApplyEl.checked) applyBtn.click()
+          if (autoApplyEl.checked && !m.partial) applyBtn.click()
         }
         break
       }
       // Terminal error/cancel states must fully release UI locks — mirrors endRun's role of
       // clearing the Watch freeze. Without this, multi-rewrite errors leave outputEl frozen
       // read-only with stale segment content and no way to edit or re-run without a reload.
-      case "rewrite_error": endRun(); outputEl.readOnly = false; multiCapture = null; setStatus(msgEl, m.error, true); break
-      case "rewrite_cancelled": endRun(); outputEl.readOnly = false; multiCapture = null; setStatus(msgEl, m.reason ?? "Cancelled."); break
+      case "rewrite_error":
+      case "rewrite_cancelled": {
+        const partial = !!multiCapture?.segments.some((s) => s.output != null)
+        endRun()
+        if (partial) resultPending = true // keep the finished segments applyable
+        else { outputEl.readOnly = false; multiCapture = null }
+        // A streamed run that didn't finish leaves the previous result in place.
+        if (streamed && !multiCapture) outputEl.value = prevOutput
+        streamed = false
+        updateDiffView()
+        if (m.type === "rewrite_error") setStatus(msgEl, m.error, true)
+        else setStatus(msgEl, partial ? `${m.reason ?? "Cancelled."} Finished messages can still be applied.` : (m.reason ?? "Cancelled."))
+        break
+      }
       case "apply_done": applyBtn.disabled = false; resultPending = false; syncActions(); undoBtn.disabled = !m.canUndo; redoBtn.disabled = !m.canRedo; setStatus(msgEl, "Applied to message ✓"); break
       case "apply_multi_done": {
         applyBtn.disabled = false
@@ -1585,7 +1609,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       }
       // apply_error covers both single and multi failures (backend uses one variant). Fully
       // reset UI locks the same way apply_multi_done does, so Watch + output stay usable.
-      case "apply_error": applyBtn.disabled = false; resultPending = false; multiCapture = null; outputEl.readOnly = false; syncActions(); setStatus(msgEl, m.error, true); break
+      case "apply_error": applyBtn.disabled = false; syncActions(); setStatus(msgEl, m.error, true); break
       case "undo_done": undoBtn.disabled = !m.canUndo; redoBtn.disabled = !m.canRedo; setStatus(msgEl, "Reverted ✓"); break
       case "undo_error": setStatus(msgEl, m.error, true); break
       case "redo_done": undoBtn.disabled = !m.canUndo; redoBtn.disabled = !m.canRedo; setStatus(msgEl, "Reapplied ✓"); break
@@ -1629,6 +1653,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         break
       }
       case "token_estimate": {
+        if (m.seq != null && m.seq < previewSeq) break
         lastEstimate = m
         renderEstimate()
         break

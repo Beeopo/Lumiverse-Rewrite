@@ -101,6 +101,7 @@ test("narrationPerson reads the narration, not quoted dialogue", () => {
   expect(narrationPerson('He said, "I am tired," and sat down.')).toBe(null)
   expect(narrationPerson("You open the door. Your hands shake.")).toBe("second")
   expect(narrationPerson("She walked up the road.")).toBe(null)
+  expect(narrationPerson("My boots were wet. We kept going.")).toBe("first")
 })
 
 test("buildUserPrompt adds a point-of-view note for first-person passages", () => {

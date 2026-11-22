@@ -104,7 +104,7 @@ export type FrontendMsg =
   | { type: "refine_prompt"; text: string; connectionId: string }
   | { type: "architect_style"; description: string; connectionId: string }
   | { type: "gen_autoprofile"; chatId: string; characterId: string; connectionId: string }
-  | { type: "preview_tokens"; chatId?: string; messageId?: string; characterId?: string; text: string; profileId: string; customPrompt?: string; concise: boolean; lengthPct: number }
+  | { type: "preview_tokens"; seq?: number; full?: boolean; chatId?: string; messageId?: string; characterId?: string; text: string; profileId: string; customPrompt?: string; concise: boolean; lengthPct: number }
   | { type: "get_debug" }
   | { type: "cancel" }
   | { type: "reset_config" }
@@ -113,7 +113,7 @@ export type FrontendMsg =
 export type BackendMsg =
   | { type: "config"; config: RewriteConfig; persisted?: boolean }
   | { type: "rewrite_result"; text: string; tokens?: number; requestId?: string }
-  | { type: "rewrite_multi_result"; segments: { messageId: string; output: string }[]; tokens?: number; requestId?: string }
+  | { type: "rewrite_multi_result"; segments: { messageId: string; output: string }[]; tokens?: number; requestId?: string; partial?: boolean }
   | { type: "rewrite_error"; error: string; requestId?: string }
   | { type: "apply_done"; messageId: string; canUndo?: boolean; canRedo?: boolean }
   | { type: "apply_multi_done"; applied: number; skipped: string[]; canUndo: boolean; canRedo: boolean }
@@ -131,7 +131,7 @@ export type BackendMsg =
   | { type: "autoprofile_result"; chatId: string; name: string; prompt: string }
   | { type: "autoprofile_error"; error: string }
   | { type: "debug"; entries: DebugEntry[] }
-  | { type: "token_estimate"; total: number; system: number; selection: number; sources: { label: string; tokens: number; on?: boolean }[] }
+  | { type: "token_estimate"; total: number; system: number; selection: number; sources: { label: string; tokens: number; on?: boolean }[]; seq?: number }
   | { type: "rewrite_chunk"; text: string; pass: number; passes: number; label: string; requestId?: string }
   | { type: "rewrite_stage"; stage: "merging" | "pass"; pass?: number; passes?: number; label?: string; segment?: number; segments?: number; requestId?: string }
   | { type: "rewrite_cancelled"; reason?: string; requestId?: string }
